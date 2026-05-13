@@ -1,0 +1,272 @@
+"""Operator CLI: install / uninstall / status / test.
+
+Commands:
+  jarvis-cc install     - write config, hook into ~/.claude/settings.json, install plist
+  jarvis-cc uninstall   - reverse install steps (keeps user data)
+  jarvis-cc status      - check daemon health
+  jarvis-cc test        - send a synthetic event to the daemon
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import httpx
+
+from .config import DEFAULT_CONFIG_PATH, expanduser
+
+PLIST_LABEL = "com.jobin.jarvis-cc"
+PLIST_PATH = expanduser(f"~/Library/LaunchAgents/{PLIST_LABEL}.plist")
+CLAUDE_SETTINGS_PATH = expanduser("~/.claude/settings.json")
+JARVIS_DIR = expanduser("~/.jarvis-cc")
+
+
+def merge_claude_settings(existing: dict, hook_command: str) -> dict:
+    """Idempotently add our Notification hook entry without disturbing others."""
+    out = copy.deepcopy(existing)
+    hooks = out.setdefault("hooks", {})
+    notification = hooks.setdefault("Notification", [])
+    # Detect existing entry
+    for matcher in notification:
+        for hook in matcher.get("hooks", []):
+            if hook.get("command") == hook_command:
+                return out
+    notification.append(
+        {"matcher": "", "hooks": [{"type": "command", "command": hook_command}]}
+    )
+    return out
+
+
+def remove_from_claude_settings(existing: dict, hook_command: str) -> dict:
+    out = copy.deepcopy(existing)
+    notification = out.get("hooks", {}).get("Notification", [])
+    filtered = []
+    for matcher in notification:
+        hooks = [h for h in matcher.get("hooks", []) if h.get("command") != hook_command]
+        if hooks:
+            filtered.append({**matcher, "hooks": hooks})
+    if "hooks" in out:
+        out["hooks"]["Notification"] = filtered
+    return out
+
+
+def render_plist(label: str, program: str, log_dir: str) -> str:
+    """Render a launchd plist for the daemon."""
+    return textwrap.dedent(
+        f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>{label}</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>{program}</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>StandardOutPath</key>
+            <string>{log_dir}/daemon.stdout.log</string>
+            <key>StandardErrorPath</key>
+            <string>{log_dir}/daemon.stderr.log</string>
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>PATH</key>
+                <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+            </dict>
+        </dict>
+        </plist>
+        """
+    )
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    # 1. Make jarvis-cc dir tree
+    base = Path(JARVIS_DIR)
+    (base / "voices").mkdir(parents=True, exist_ok=True)
+    (base / "models").mkdir(parents=True, exist_ok=True)
+    (base / "logs").mkdir(parents=True, exist_ok=True)
+
+    # 2. Write default config if not present
+    cfg_path = Path(DEFAULT_CONFIG_PATH)
+    if not cfg_path.exists():
+        cfg_path.write_text(_default_config_toml(), encoding="utf-8")
+        print(f"  wrote {cfg_path}")
+    else:
+        print(f"  (kept existing {cfg_path})")
+
+    # 3. Patch ~/.claude/settings.json
+    settings_path = Path(CLAUDE_SETTINGS_PATH)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except json.JSONDecodeError:
+            print(f"!! could not parse {settings_path}, refusing to overwrite", file=sys.stderr)
+            return 2
+    merged = merge_claude_settings(existing, hook_command="jarvis-cc-hook")
+    settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
+    print(f"  patched {settings_path}")
+
+    # 4. Write plist
+    program = shutil.which("jarvis-cc-daemon")
+    if not program:
+        print("!! jarvis-cc-daemon not on PATH — did you run `uv sync`?", file=sys.stderr)
+        return 3
+    plist_path = Path(PLIST_PATH)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text(render_plist(PLIST_LABEL, program, str(base / "logs")))
+    print(f"  wrote {plist_path}")
+
+    # 5. Load plist
+    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    rc = subprocess.run(["launchctl", "load", str(plist_path)], check=False).returncode
+    if rc != 0:
+        print(f"!! launchctl load returned {rc}", file=sys.stderr)
+        return rc
+
+    print(
+        "\nDone. Next steps:\n"
+        f"  1. Place reference audio at {base / 'voices/jarvis_zh.wav'} and "
+        f"{base / 'voices/jarvis_en.wav'}\n"
+        f"  2. Set environment variables: DEEPSEEK_API_KEY (required), "
+        f"ELEVENLABS_API_KEY (optional)\n"
+        f"  3. Restart Claude Code\n"
+        f"  4. Run: jarvis-cc test\n"
+    )
+    return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    plist_path = Path(PLIST_PATH)
+    if plist_path.exists():
+        subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+        plist_path.unlink()
+        print(f"  removed {plist_path}")
+
+    settings_path = Path(CLAUDE_SETTINGS_PATH)
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+            pruned = remove_from_claude_settings(existing, hook_command="jarvis-cc-hook")
+            settings_path.write_text(json.dumps(pruned, indent=2, ensure_ascii=False) + "\n")
+            print(f"  cleaned {settings_path}")
+        except json.JSONDecodeError:
+            pass
+
+    if args.purge:
+        base = Path(JARVIS_DIR)
+        if base.exists():
+            shutil.rmtree(base)
+            print(f"  purged {base}")
+    else:
+        print(f"  (kept {JARVIS_DIR}; pass --purge to remove)")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    try:
+        r = httpx.get("http://127.0.0.1:9527/health", timeout=1.0)
+        print(json.dumps(r.json(), indent=2, ensure_ascii=False))
+        return 0
+    except httpx.HTTPError as exc:
+        print(f"daemon unreachable: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_test(args: argparse.Namespace) -> int:
+    import socket as _socket
+
+    from .config import load_config
+
+    cfg = load_config(DEFAULT_CONFIG_PATH)
+    payload = {
+        "notification_type": args.event,
+        "tool_name": args.tool,
+        "tool_input": {},
+        "cwd": os.getcwd(),
+        "session_id": "test",
+    }
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        s.connect(cfg.paths.socket)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        print(f"sent {args.event} ({args.tool}) to {cfg.paths.socket}")
+        return 0
+    except OSError as exc:
+        print(f"failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        s.close()
+
+
+def _default_config_toml() -> str:
+    return textwrap.dedent(
+        """\
+        # jarvis-cc config.toml — auto-generated, edit freely
+        [llm]
+        provider = "deepseek"
+        fallback = "ollama"
+
+        [llm.deepseek]
+        api_key_env = "DEEPSEEK_API_KEY"
+        model = "deepseek-chat"
+
+        [llm.ollama]
+        base_url = "http://localhost:11434"
+        model = "qwen2.5:7b"
+
+        [tts]
+        provider = "xtts"
+        fallback = "say"
+
+        [tts.xtts]
+        model_dir = "~/.jarvis-cc/models/xtts-v2"
+        ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
+        ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+        device = "mps"
+
+        [tts.elevenlabs]
+        api_key_env = "ELEVENLABS_API_KEY"
+        voice_id = ""
+        model = "eleven_turbo_v2_5"
+
+        [behavior]
+        dedup_window_seconds = 10
+        queue_max_size = 5
+        voice_language = "auto"
+        events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
+        phrase_max_chars = 30
+        """
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="jarvis-cc")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("install").set_defaults(func=cmd_install)
+    p_un = sub.add_parser("uninstall")
+    p_un.add_argument("--purge", action="store_true", help="also remove ~/.jarvis-cc/")
+    p_un.set_defaults(func=cmd_uninstall)
+    sub.add_parser("status").set_defaults(func=cmd_status)
+    p_test = sub.add_parser("test")
+    p_test.add_argument("--event", default="permission_prompt")
+    p_test.add_argument("--tool", default="Bash")
+    p_test.set_defaults(func=cmd_test)
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
