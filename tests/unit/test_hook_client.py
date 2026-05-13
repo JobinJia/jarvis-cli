@@ -59,3 +59,11 @@ def test_forward_event_handles_invalid_json(tmp_path: Path):
     _start_unix_echo_server(sock_path)
     ok = forward_event(io.StringIO("not-json"), sock_path)
     assert ok is False
+
+
+def test_forward_event_returns_false_for_non_dict_json(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    # Valid JSON, but a list — would have crashed on payload["_received_at"]=...
+    ok = forward_event(io.StringIO("[1,2,3]"), sock_path)
+    assert ok is False

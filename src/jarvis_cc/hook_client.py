@@ -29,6 +29,9 @@ def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
     except (json.JSONDecodeError, ValueError):
         return False
 
+    if not isinstance(payload, dict):
+        return False
+
     payload["_received_at"] = time.time()
     line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -48,10 +51,18 @@ def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
 
 
 def main() -> int:
-    """Entry point registered as `jarvis-cc-hook` console_script."""
-    cfg = load_config(DEFAULT_CONFIG_PATH)
-    forward_event(sys.stdin, cfg.paths.socket)
-    return 0  # Always 0; failures are silent to Claude Code
+    """Entry point registered as `jarvis-cc-hook` console_script.
+
+    Must NEVER raise — Claude Code reads stdout for hook decisions and a
+    traceback would corrupt that channel. All failures are silent and
+    exit 0.
+    """
+    try:
+        cfg = load_config(DEFAULT_CONFIG_PATH)
+        forward_event(sys.stdin, cfg.paths.socket)
+    except Exception:  # noqa: BLE001 — structural guarantee
+        pass
+    return 0
 
 
 if __name__ == "__main__":
