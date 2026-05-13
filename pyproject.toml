@@ -10,9 +10,6 @@ dependencies = [
     "loguru>=0.7",
     "langdetect>=1.0.9",
     "coqui-tts>=0.24",
-    "anthropic>=0.40",
-    "openai>=1.50",
-    "elevenlabs>=1.10",
 ]
 
 [project.scripts]

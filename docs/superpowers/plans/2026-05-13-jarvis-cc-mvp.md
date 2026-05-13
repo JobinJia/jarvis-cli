@@ -3384,6 +3384,8 @@ uv run jarvis-cc test --event permission_prompt --tool Bash
 
 Expected: You hear a Jarvis-voiced sentence within ~3 seconds.
 
+> To force a language, set `[behavior] voice_language = "zh"` in `~/.jarvis-cc/config.toml`. The default `"auto"` value detects per-event from the project cwd.
+
 - [ ] **Step 6: Verify Claude Code hook is wired**
 
 Open a fresh Claude Code session in any project. Ask Claude to do something that needs Bash permission (eg `请运行 ls`). When the permission prompt appears in Claude Code, you should hear the Jarvis voice within 1-3 seconds.

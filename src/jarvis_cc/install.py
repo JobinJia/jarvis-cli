@@ -57,8 +57,12 @@ def remove_from_claude_settings(existing: dict, hook_command: str) -> dict:
     return out
 
 
-def render_plist(label: str, program: str, log_dir: str) -> str:
+def render_plist(label: str, program: str, log_dir: str, env: dict[str, str]) -> str:
     """Render a launchd plist for the daemon."""
+    env_xml = "\n".join(
+        f"        <key>{k}</key>\n        <string>{v}</string>"
+        for k, v in env.items()
+    )
     return textwrap.dedent(
         f"""\
         <?xml version="1.0" encoding="UTF-8"?>
@@ -81,8 +85,7 @@ def render_plist(label: str, program: str, log_dir: str) -> str:
             <string>{log_dir}/daemon.stderr.log</string>
             <key>EnvironmentVariables</key>
             <dict>
-                <key>PATH</key>
-                <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{env_xml}
             </dict>
         </dict>
         </plist>
@@ -126,7 +129,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 3
     plist_path = Path(PLIST_PATH)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_text(render_plist(PLIST_LABEL, program, str(base / "logs")))
+    # Harvest API keys from the operator's current env so launchd can see them
+    env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+    harvest_keys = [
+        "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "ELEVENLABS_API_KEY",
+    ]
+    for k in harvest_keys:
+        v = os.environ.get(k)
+        if v:
+            env[k] = v
+            print(f"  baked {k} into plist")
+    plist_path.write_text(render_plist(PLIST_LABEL, program, str(base / "logs"), env))
     print(f"  wrote {plist_path}")
 
     # 5. Load plist
@@ -140,8 +156,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         "\nDone. Next steps:\n"
         f"  1. Place reference audio at {base / 'voices/jarvis_zh.wav'} and "
         f"{base / 'voices/jarvis_en.wav'}\n"
-        f"  2. Set environment variables: DEEPSEEK_API_KEY (required), "
-        f"ELEVENLABS_API_KEY (optional)\n"
+        f"  2. If you didn't have DEEPSEEK_API_KEY in your env when you ran install,\n"
+        f"     set it now and re-run `jarvis-cc install` (this re-bakes the plist).\n"
         f"  3. Restart Claude Code\n"
         f"  4. Run: jarvis-cc test\n"
     )
