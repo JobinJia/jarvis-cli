@@ -823,10 +823,11 @@ def test_different_keys_are_independent():
 def test_is_duplicate_updates_last_seen():
     w = DedupWindow(window_seconds=10)
     w.is_duplicate(_ev(0.0))
-    w.is_duplicate(_ev(5.0))
-    # Now last_seen=5.0; window expires at 15.0
+    w.is_duplicate(_ev(5.0))  # dup → last_seen slid to 5.0; window now expires at 15.0
+    # 14.9 is still inside the slid window → dup; this slides last_seen to 14.9
     assert w.is_duplicate(_ev(14.9)) is True
-    assert w.is_duplicate(_ev(15.1)) is False
+    # 25.1 - 14.9 = 10.2 > 10 → outside window from the freshly-slid anchor → not dup
+    assert w.is_duplicate(_ev(25.1)) is False
 ```
 
 - [ ] **Step 2: Run test (expect ImportError)**
