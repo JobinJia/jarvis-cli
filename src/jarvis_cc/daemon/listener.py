@@ -69,5 +69,11 @@ async def serve_unix_socket(
     server = await asyncio.start_unix_server(handle, path=str(sock_path))
     os.chmod(sock_path, 0o600)
     logger.info("Listener bound to {}", sock_path)
-    async with server:
-        await server.serve_forever()
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        try:
+            sock_path.unlink()
+        except FileNotFoundError:
+            pass

@@ -31,20 +31,32 @@ from .queue import BoundedEventQueue
 
 
 def _make_phrase_provider(name: str, cfg: Config) -> PhraseProvider | None:
-    return {
+    factories = {
         "deepseek": lambda: DeepSeekProvider(cfg.llm.deepseek),
         "anthropic": lambda: AnthropicProvider(cfg.llm.anthropic),
         "openai": lambda: OpenAIProvider(cfg.llm.openai),
         "ollama": lambda: OllamaProvider(cfg.llm.ollama),
-    }.get(name, lambda: None)()
+    }
+    factory = factories.get(name)
+    if factory is None:
+        if name:  # empty string means "no fallback configured", not a typo
+            logger.warning("Unknown phrase provider {!r}; skipping in chain", name)
+        return None
+    return factory()
 
 
 def _make_tts_provider(name: str, cfg: Config) -> TTSProvider | None:
-    return {
+    factories = {
         "xtts": lambda: XTTSProvider(cfg.tts.xtts),
         "elevenlabs": lambda: ElevenLabsProvider(cfg.tts.elevenlabs),
         "say": lambda: SayProvider(),
-    }.get(name, lambda: None)()
+    }
+    factory = factories.get(name)
+    if factory is None:
+        if name:
+            logger.warning("Unknown TTS provider {!r}; skipping in chain", name)
+        return None
+    return factory()
 
 
 class Daemon:
@@ -69,7 +81,8 @@ class Daemon:
 
     def _snapshot(self) -> dict:
         return {
-            "queue_size": self.queue._maxsize,
+            "queue_size": self.queue.size,
+            "queue_capacity": self.queue.maxsize,
             "dropped": self.queue.dropped_count,
             "last_text": self._last_text,
         }
@@ -113,6 +126,10 @@ class Daemon:
             await serve_unix_socket(Path(self.cfg.paths.socket), self._on_event)
         finally:
             worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
             await self.health.stop()
 
 

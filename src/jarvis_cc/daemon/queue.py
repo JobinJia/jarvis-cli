@@ -18,6 +18,16 @@ class BoundedEventQueue:
         self._cond = asyncio.Condition()
         self.dropped_count = 0
 
+    @property
+    def size(self) -> int:
+        """Current number of queued events."""
+        return len(self._deque)
+
+    @property
+    def maxsize(self) -> int:
+        """Configured maximum capacity."""
+        return self._maxsize
+
     async def put_or_drop(self, event: Event) -> None:
         async with self._cond:
             if len(self._deque) == self._maxsize:
