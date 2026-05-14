@@ -29,6 +29,7 @@ class Event:
     # by `jarvis-cc say --text` for assistant-side scenarios CC doesn't cover.
     text: str | None = None
     lang: Lang | None = None  # only honored when `text` is set
+    voice_id: str | None = None  # per-event TTS voice override (eg EL voice_id)
 
     def dedup_key(self) -> str:
         """Hash key for dedup window: same (cwd, type, tool) collapses."""

@@ -18,12 +18,18 @@ class TTSEngine:
         self.primary = primary
         self.fallback = fallback
 
-    async def synthesize(self, text: str, lang: Lang, out_path: Path) -> Path:
+    async def synthesize(
+        self,
+        text: str,
+        lang: Lang,
+        out_path: Path,
+        voice_id: str | None = None,
+    ) -> Path:
         for provider in (self.primary, self.fallback):
             if provider is None:
                 continue
             try:
-                return await provider.synthesize(text, lang, out_path)
+                return await provider.synthesize(text, lang, out_path, voice_id=voice_id)
             except Exception as exc:
                 logger.warning("TTS provider {} failed: {}", provider.name, exc)
         raise RuntimeError("All TTS providers failed")

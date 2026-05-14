@@ -264,6 +264,8 @@ def cmd_say(args: argparse.Namespace) -> int:
     if args.text:
         payload["text"] = args.text
         payload["lang"] = args.lang
+    if args.voice:
+        payload["voice_id"] = args.voice
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     try:
         s.connect(cfg.paths.socket)
@@ -353,6 +355,12 @@ def main() -> int:
         default="en",
         choices=["en", "zh"],
         help="language of --text (default: en); ignored without --text",
+    )
+    p_say.add_argument(
+        "--voice",
+        default=None,
+        help="per-call TTS voice override (eg an ElevenLabs voice_id or a "
+        "macOS `say` voice name like Karen); defaults to config",
     )
     p_say.set_defaults(func=cmd_say)
     args = parser.parse_args()

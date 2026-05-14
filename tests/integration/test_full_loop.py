@@ -25,7 +25,7 @@ async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch):
         phrased.append(s)
         return s
 
-    async def fake_synth(text, lang, out_path):
+    async def fake_synth(text, lang, out_path, voice_id=None):
         out_path.write_bytes(b"WAV")
         return out_path
 

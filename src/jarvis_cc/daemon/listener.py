@@ -40,6 +40,7 @@ def parse_payload(raw: str) -> Event | None:
         received_at=float(data.get("_received_at", time.time())),
         text=data.get("text"),
         lang=lang,
+        voice_id=data.get("voice_id"),
     )
 
 

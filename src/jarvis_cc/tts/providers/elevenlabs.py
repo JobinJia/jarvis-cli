@@ -17,18 +17,25 @@ class ElevenLabsProvider(TTSProvider):
     def __init__(self, cfg: ElevenLabsConfig) -> None:
         self.cfg = cfg
 
-    async def synthesize(self, text: str, lang: Lang, out_path: Path) -> Path:
+    async def synthesize(
+        self,
+        text: str,
+        lang: Lang,
+        out_path: Path,
+        voice_id: str | None = None,
+    ) -> Path:
         key = os.getenv(self.cfg.api_key_env)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
-        if not self.cfg.voice_id:
+        effective_voice = voice_id or self.cfg.voice_id
+        if not effective_voice:
             raise RuntimeError("ElevenLabs voice_id is not configured")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         async with httpx.AsyncClient(
             base_url="https://api.elevenlabs.io", timeout=15.0
         ) as client:
             r = await client.post(
-                f"/v1/text-to-speech/{self.cfg.voice_id}",
+                f"/v1/text-to-speech/{effective_voice}",
                 headers={
                     "xi-api-key": key,
                     "accept": "audio/mpeg",

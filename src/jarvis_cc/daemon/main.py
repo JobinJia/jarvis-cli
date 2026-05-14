@@ -113,7 +113,7 @@ class Daemon:
                 self._last_text = text
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
-                await self.tts.synthesize(text, lang, out_path)
+                await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
                 try:
                     await play(out_path)
                 finally:

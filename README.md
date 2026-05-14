@@ -252,7 +252,18 @@ uv run jarvis-cc say --text "Sir, shall this repository be made public or privat
 # default --lang en; use --lang zh to switch voice/pronunciation
 ```
 
-Both modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `--reason` or an auto-uuid) so dedup never collapses successive calls.
+**Override the voice for one call** — useful for A/B-testing candidate voices without editing config:
+
+```bash
+uv run jarvis-cc say \
+  --text "Sir, sample line for voice tasting." \
+  --voice onwK4e9ZLuTAKqWW03F9        # Daniel, a deeper British male
+# next `say` without --voice goes back to the config-default voice
+```
+
+`--voice` is an ElevenLabs `voice_id` when the active TTS provider is ElevenLabs, or a macOS `say` voice name (eg `Karen`, `Daniel`, `Tingting`) when the active provider is `say`. XTTS-v2 ignores the override.
+
+All modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `--reason` or an auto-uuid) so dedup never collapses successive calls.
 
 ## Project layout
 

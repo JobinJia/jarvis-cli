@@ -16,8 +16,16 @@ _VOICE_BY_LANG = {
 class SayProvider(TTSProvider):
     name = "say"
 
-    async def synthesize(self, text: str, lang: Lang, out_path: Path) -> Path:
-        voice = _VOICE_BY_LANG.get(lang, "Daniel")
+    async def synthesize(
+        self,
+        text: str,
+        lang: Lang,
+        out_path: Path,
+        voice_id: str | None = None,
+    ) -> Path:
+        # `voice_id` here is interpreted as a macOS `say` voice name (eg "Daniel",
+        # "Tingting", "Karen"); fall back to a language-appropriate default.
+        voice = voice_id or _VOICE_BY_LANG.get(lang, "Daniel")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         # `say` outputs AIFF, but afplay handles both .aiff and .wav.
         proc = await asyncio.create_subprocess_exec(
