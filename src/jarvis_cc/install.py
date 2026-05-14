@@ -239,6 +239,41 @@ def cmd_test(args: argparse.Namespace) -> int:
         s.close()
 
 
+def cmd_say(args: argparse.Namespace) -> int:
+    """Manual one-shot trigger for cases CC doesn't cover (e.g. an assistant
+    that wants to alert the user before showing an AskUserQuestion UI).
+
+    Sends a synthetic `idle_prompt` event; `--reason` gets stuffed into
+    `tool_name` so the dedup hash is unique per call (no 10s collision) and
+    so the LLM has a hint about why it's speaking.
+    """
+    import socket as _socket
+    import uuid
+
+    from .config import load_config
+
+    cfg = load_config(DEFAULT_CONFIG_PATH)
+    reason = args.reason or f"manual-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "notification_type": "idle_prompt",
+        "tool_name": reason,
+        "tool_input": {},
+        "cwd": os.getcwd(),
+        "session_id": "manual",
+    }
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        s.connect(cfg.paths.socket)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        print(f"queued say (reason={reason!r})")
+        return 0
+    except OSError as exc:
+        print(f"failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        s.close()
+
+
 def _default_config_toml() -> str:
     return textwrap.dedent(
         """\
@@ -292,6 +327,17 @@ def main() -> int:
     p_test.add_argument("--event", default="permission_prompt")
     p_test.add_argument("--tool", default="Bash")
     p_test.set_defaults(func=cmd_test)
+    p_say = sub.add_parser(
+        "say",
+        help="manually trigger Jarvis to speak (bypasses dedup; for events CC's "
+        "Notification hook doesn't cover, eg AskUserQuestion)",
+    )
+    p_say.add_argument(
+        "--reason",
+        default=None,
+        help="short label that flows into the LLM prompt as `tool_name`",
+    )
+    p_say.set_defaults(func=cmd_say)
     args = parser.parse_args()
     return args.func(args)
 

@@ -206,6 +206,7 @@ No network calls. Voice quality drops; this is your "airplane mode".
 |---|---|
 | Check daemon health | `uv run jarvis-cc status` |
 | Fire a synthetic event | `uv run jarvis-cc test --event permission_prompt --tool Bash` |
+| Manually trigger Jarvis | `uv run jarvis-cc say --reason user-input-requested` |
 | Tail daemon logs | `tail -f ~/.jarvis-cc/logs/daemon.stderr.log` |
 | Reload daemon | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` |
 | Update API keys in plist | re-run `uv run jarvis-cc install` (idempotent) |
@@ -230,6 +231,16 @@ No network calls. Voice quality drops; this is your "airplane mode".
 **Ollama returns empty text on qwen3 / R1-style models.** Make sure your Ollama is 0.9+; the provider passes `think: false` automatically. If you pinned an older Ollama, upgrade.
 
 **ElevenLabs 401.** Your API key is missing `text_to_speech` scope. Regenerate it in ElevenLabs → Profile → API Keys with permissions = Full (or include `text_to_speech` explicitly).
+
+## Manual triggers
+
+Claude Code only fires its Notification hook for tool-permission prompts, idle waits, and MCP elicitation. Some scenarios fall outside that — most notably assistant-initiated questions (`AskUserQuestion`). For those, the assistant can `Bash`-call:
+
+```bash
+uv run jarvis-cc say --reason "user-input-requested"
+```
+
+This pushes a synthetic `idle_prompt` event onto the daemon, bypassing dedup (the `--reason` becomes the `tool_name`, making the dedup hash unique per call). The LLM still generates the phrase from context, so it never repeats verbatim.
 
 ## Project layout
 
