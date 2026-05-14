@@ -26,7 +26,11 @@ class OllamaProvider(PhraseProvider):
                     "model": self.cfg.model,
                     "messages": messages,
                     "stream": False,
-                    "options": {"temperature": 0.7, "num_predict": 80},
+                    # think=False disables Qwen3/DeepSeek-R1 style chain-of-thought
+                    # output so num_predict isn't consumed by <think>...</think>.
+                    # Ignored by models that don't emit thinking tokens.
+                    "think": False,
+                    "options": {"temperature": 0.7, "num_predict": 200},
                 },
             )
             r.raise_for_status()
