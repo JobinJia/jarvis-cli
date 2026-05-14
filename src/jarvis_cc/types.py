@@ -24,6 +24,11 @@ class Event:
     session_id: str | None = None
     raw_message: str | None = None
     received_at: float = 0.0  # epoch seconds; filled by listener
+    # Pre-baked text from the caller. When set the daemon SKIPS the phrase
+    # router (no LLM round-trip) and synthesizes this string verbatim. Used
+    # by `jarvis-cc say --text` for assistant-side scenarios CC doesn't cover.
+    text: str | None = None
+    lang: Lang | None = None  # only honored when `text` is set
 
     def dedup_key(self) -> str:
         """Hash key for dedup window: same (cwd, type, tool) collapses."""

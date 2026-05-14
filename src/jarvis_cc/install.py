@@ -254,18 +254,24 @@ def cmd_say(args: argparse.Namespace) -> int:
 
     cfg = load_config(DEFAULT_CONFIG_PATH)
     reason = args.reason or f"manual-{uuid.uuid4().hex[:8]}"
-    payload = {
+    payload: dict = {
         "notification_type": "idle_prompt",
         "tool_name": reason,
         "tool_input": {},
         "cwd": os.getcwd(),
         "session_id": "manual",
     }
+    if args.text:
+        payload["text"] = args.text
+        payload["lang"] = args.lang
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     try:
         s.connect(cfg.paths.socket)
         s.sendall((json.dumps(payload) + "\n").encode())
-        print(f"queued say (reason={reason!r})")
+        if args.text:
+            print(f"queued say (text={args.text!r}, lang={args.lang})")
+        else:
+            print(f"queued say (reason={reason!r}, LLM will phrase it)")
         return 0
     except OSError as exc:
         print(f"failed: {exc}", file=sys.stderr)
@@ -336,6 +342,17 @@ def main() -> int:
         "--reason",
         default=None,
         help="short label that flows into the LLM prompt as `tool_name`",
+    )
+    p_say.add_argument(
+        "--text",
+        default=None,
+        help="speak this exact text; skips the LLM entirely",
+    )
+    p_say.add_argument(
+        "--lang",
+        default="en",
+        choices=["en", "zh"],
+        help="language of --text (default: en); ignored without --text",
     )
     p_say.set_defaults(func=cmd_say)
     args = parser.parse_args()

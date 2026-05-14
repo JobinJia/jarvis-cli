@@ -99,12 +99,17 @@ class Daemon:
         while True:
             event = await self.queue.get()
             try:
-                lang = (
-                    detect_for(event.cwd)
-                    if self.cfg.behavior.voice_language == "auto"
-                    else self.cfg.behavior.voice_language  # type: ignore[assignment]
-                )
-                text = await self.router.phrase(event, lang=lang)
+                if event.text is not None:
+                    # Caller pre-baked the phrase; skip the LLM entirely.
+                    text = event.text
+                    lang = event.lang or "en"
+                else:
+                    lang = (
+                        detect_for(event.cwd)
+                        if self.cfg.behavior.voice_language == "auto"
+                        else self.cfg.behavior.voice_language  # type: ignore[assignment]
+                    )
+                    text = await self.router.phrase(event, lang=lang)
                 self._last_text = text
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)

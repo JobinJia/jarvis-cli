@@ -206,7 +206,8 @@ No network calls. Voice quality drops; this is your "airplane mode".
 |---|---|
 | Check daemon health | `uv run jarvis-cc status` |
 | Fire a synthetic event | `uv run jarvis-cc test --event permission_prompt --tool Bash` |
-| Manually trigger Jarvis | `uv run jarvis-cc say --reason user-input-requested` |
+| Manually trigger Jarvis (LLM phrases it) | `uv run jarvis-cc say --reason user-input-requested` |
+| Manually trigger Jarvis (read exact text) | `uv run jarvis-cc say --text "Sir, shall we proceed?"` |
 | Tail daemon logs | `tail -f ~/.jarvis-cc/logs/daemon.stderr.log` |
 | Reload daemon | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` |
 | Update API keys in plist | re-run `uv run jarvis-cc install` (idempotent) |
@@ -234,13 +235,24 @@ No network calls. Voice quality drops; this is your "airplane mode".
 
 ## Manual triggers
 
-Claude Code only fires its Notification hook for tool-permission prompts, idle waits, and MCP elicitation. Some scenarios fall outside that — most notably assistant-initiated questions (`AskUserQuestion`). For those, the assistant can `Bash`-call:
+Claude Code only fires its Notification hook for tool-permission prompts, idle waits, and MCP elicitation. Some scenarios fall outside that — most notably assistant-initiated questions (`AskUserQuestion`). Two modes:
+
+**LLM phrases it** — give the model a context label, let it write the line:
 
 ```bash
 uv run jarvis-cc say --reason "user-input-requested"
+# heard: "Sir, your input is awaited."
 ```
 
-This pushes a synthetic `idle_prompt` event onto the daemon, bypassing dedup (the `--reason` becomes the `tool_name`, making the dedup hash unique per call). The LLM still generates the phrase from context, so it never repeats verbatim.
+**Speak this exact text** — bypass the LLM entirely (faster, predictable, ideal for reading out the actual question):
+
+```bash
+uv run jarvis-cc say --text "Sir, shall this repository be made public or private?"
+# heard: <verbatim>
+# default --lang en; use --lang zh to switch voice/pronunciation
+```
+
+Both modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `--reason` or an auto-uuid) so dedup never collapses successive calls.
 
 ## Project layout
 

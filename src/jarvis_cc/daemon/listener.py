@@ -27,6 +27,9 @@ def parse_payload(raw: str) -> Event | None:
     ntype = data.get("notification_type")
     if ntype not in _ALLOWED_TYPES:
         return None
+    lang = data.get("lang")
+    if lang not in (None, "zh", "en"):
+        lang = None
     return Event(
         notification_type=ntype,
         tool_name=data.get("tool_name"),
@@ -35,6 +38,8 @@ def parse_payload(raw: str) -> Event | None:
         session_id=data.get("session_id"),
         raw_message=data.get("message") or data.get("raw_message"),
         received_at=float(data.get("_received_at", time.time())),
+        text=data.get("text"),
+        lang=lang,
     )
 
 
