@@ -28,28 +28,36 @@ CLAUDE_SETTINGS_PATH = expanduser("~/.claude/settings.json")
 JARVIS_DIR = expanduser("~/.jarvis-cc")
 
 
+def _is_our_hook(hook: dict) -> bool:
+    """Match any entry whose command basename is jarvis-cc-hook (legacy bare
+    name or absolute path from a previous install in a different venv)."""
+    return Path(hook.get("command", "")).name == "jarvis-cc-hook"
+
+
 def merge_claude_settings(existing: dict, hook_command: str) -> dict:
-    """Idempotently add our Notification hook entry without disturbing others."""
+    """Install our Notification hook, replacing any prior jarvis-cc-hook entry."""
     out = copy.deepcopy(existing)
     hooks = out.setdefault("hooks", {})
     notification = hooks.setdefault("Notification", [])
-    # Detect existing entry
+    pruned: list[dict] = []
     for matcher in notification:
-        for hook in matcher.get("hooks", []):
-            if hook.get("command") == hook_command:
-                return out
-    notification.append(
+        kept = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
+        if kept:
+            pruned.append({**matcher, "hooks": kept})
+    pruned.append(
         {"matcher": "", "hooks": [{"type": "command", "command": hook_command}]}
     )
+    out["hooks"]["Notification"] = pruned
     return out
 
 
 def remove_from_claude_settings(existing: dict, hook_command: str) -> dict:
+    """Strip our jarvis-cc-hook entries. hook_command kept for signature compat."""
     out = copy.deepcopy(existing)
     notification = out.get("hooks", {}).get("Notification", [])
     filtered = []
     for matcher in notification:
-        hooks = [h for h in matcher.get("hooks", []) if h.get("command") != hook_command]
+        hooks = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
         if hooks:
             filtered.append({**matcher, "hooks": hooks})
     if "hooks" in out:
@@ -118,9 +126,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         except json.JSONDecodeError:
             print(f"!! could not parse {settings_path}, refusing to overwrite", file=sys.stderr)
             return 2
-    merged = merge_claude_settings(existing, hook_command="jarvis-cc-hook")
+    hook_command = shutil.which("jarvis-cc-hook")
+    if not hook_command:
+        print("!! jarvis-cc-hook not on PATH — did you run `uv sync`?", file=sys.stderr)
+        return 4
+    merged = merge_claude_settings(existing, hook_command=hook_command)
     settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
-    print(f"  patched {settings_path}")
+    print(f"  patched {settings_path} (hook → {hook_command})")
 
     # 4. Write plist
     program = shutil.which("jarvis-cc-daemon")
