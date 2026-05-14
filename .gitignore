@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage
+.DS_Store
+~/.jarvis-cc/      # operator runtime dir (never commit)
+*.wav
+*.mp3
+build/
+dist/

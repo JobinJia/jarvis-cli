@@ -534,6 +534,9 @@ def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
     except (json.JSONDecodeError, ValueError):
         return False
 
+    if not isinstance(payload, dict):
+        return False
+
     payload["_received_at"] = time.time()
     line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -553,10 +556,18 @@ def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
 
 
 def main() -> int:
-    """Entry point registered as `jarvis-cc-hook` console_script."""
-    cfg = load_config(DEFAULT_CONFIG_PATH)
-    forward_event(sys.stdin, cfg.paths.socket)
-    return 0  # Always 0; failures are silent to Claude Code
+    """Entry point registered as `jarvis-cc-hook` console_script.
+
+    Must NEVER raise — Claude Code reads stdout for hook decisions and a
+    traceback would corrupt that channel. All failures are silent and
+    exit 0.
+    """
+    try:
+        cfg = load_config(DEFAULT_CONFIG_PATH)
+        forward_event(sys.stdin, cfg.paths.socket)
+    except Exception:  # noqa: BLE001 — structural guarantee
+        pass
+    return 0
 
 
 if __name__ == "__main__":
@@ -812,10 +823,11 @@ def test_different_keys_are_independent():
 def test_is_duplicate_updates_last_seen():
     w = DedupWindow(window_seconds=10)
     w.is_duplicate(_ev(0.0))
-    w.is_duplicate(_ev(5.0))
-    # Now last_seen=5.0; window expires at 15.0
+    w.is_duplicate(_ev(5.0))  # dup → last_seen slid to 5.0; window now expires at 15.0
+    # 14.9 is still inside the slid window → dup; this slides last_seen to 14.9
     assert w.is_duplicate(_ev(14.9)) is True
-    assert w.is_duplicate(_ev(15.1)) is False
+    # 25.1 - 14.9 = 10.2 > 10 → outside window from the freshly-slid anchor → not dup
+    assert w.is_duplicate(_ev(25.1)) is False
 ```
 
 - [ ] **Step 2: Run test (expect ImportError)**
@@ -3371,6 +3383,8 @@ uv run jarvis-cc test --event permission_prompt --tool Bash
 ```
 
 Expected: You hear a Jarvis-voiced sentence within ~3 seconds.
+
+> To force a language, set `[behavior] voice_language = "zh"` in `~/.jarvis-cc/config.toml`. The default `"auto"` value detects per-event from the project cwd.
 
 - [ ] **Step 6: Verify Claude Code hook is wired**
 
