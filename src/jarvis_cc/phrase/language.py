@@ -13,7 +13,7 @@ from ..types import Lang
 DetectorFactory.seed = 0  # deterministic
 
 _SOURCES = ["CLAUDE.md", "AGENTS.md", "README.md", "README"]
-_DEFAULT: Lang = "zh"
+_DEFAULT: Lang = "en"
 _SAMPLE_CHARS = 500
 
 
@@ -32,7 +32,8 @@ def _read_sample(cwd: Path) -> str | None:
 def detect_for(cwd: str | None) -> Lang:
     """Return 'zh' or 'en' for the project at `cwd`.
 
-    Default 'zh' (user's primary language) when no signal can be extracted.
+    Default 'en' when no signal can be extracted; switches to 'zh' only when
+    CLAUDE.md / AGENTS.md / README first 500 chars look Chinese.
     """
     if not cwd:
         return _DEFAULT

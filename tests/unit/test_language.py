@@ -22,10 +22,10 @@ def test_detect_falls_back_to_readme_when_no_claude_md(tmp_path: Path):
     assert detect_for(str(tmp_path)) == "zh"
 
 
-def test_detect_defaults_to_zh_when_no_signal(tmp_path: Path):
-    # Empty dir → assume the user (a Chinese speaker per spec) wants zh
-    assert detect_for(str(tmp_path)) == "zh"
+def test_detect_defaults_to_en_when_no_signal(tmp_path: Path):
+    # Empty dir → fall back to English (Jarvis's native tongue)
+    assert detect_for(str(tmp_path)) == "en"
 
 
 def test_detect_handles_none_cwd():
-    assert detect_for(None) == "zh"
+    assert detect_for(None) == "en"
