@@ -153,7 +153,11 @@ dedup_window_seconds = 10
 queue_max_size = 5
 voice_language = "auto"        # auto | zh | en
 events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
-phrase_max_chars = 30
+phrase_target_chars = 70       # LLM aims for this length
+phrase_hard_cap = 120          # LLM is told not to exceed this; no post-truncation
+
+[behavior.privacy]
+cloud_redaction = true         # scrub HOME path + secret-shaped tokens before send
 ```
 
 After editing, reload the daemon to pick up changes:
@@ -232,6 +236,8 @@ No network calls. Voice quality drops; this is your "airplane mode".
 **Ollama returns empty text on qwen3 / R1-style models.** Make sure your Ollama is 0.9+; the provider passes `think: false` automatically. If you pinned an older Ollama, upgrade.
 
 **ElevenLabs 401.** Your API key is missing `text_to_speech` scope. Regenerate it in ElevenLabs → Profile → API Keys with permissions = Full (or include `text_to_speech` explicitly).
+
+**Jarvis says the wrong thing about my command.** Content-awareness pipes `tool_input` (e.g. the actual Bash command, the file basename) into the LLM prompt. If the line still feels generic, check `tail ~/.jarvis-cc/logs/daemon.stderr.log` for whether the provider call succeeded — when LLMs error out, the daemon falls back to the generic template. The `phrase_max_chars` key in older configs is silently ignored; set `phrase_target_chars` / `phrase_hard_cap` instead.
 
 ## Manual triggers
 

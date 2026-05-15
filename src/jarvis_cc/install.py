@@ -318,7 +318,12 @@ def _default_config_toml() -> str:
         queue_max_size = 5
         voice_language = "auto"
         events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
-        phrase_max_chars = 30
+        # phrase_max_chars is deprecated and ignored; use the budget below.
+        phrase_target_chars = 70
+        phrase_hard_cap = 120
+
+        [behavior.privacy]
+        cloud_redaction = true
         """
     )
 
