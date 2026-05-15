@@ -10,12 +10,14 @@ _ZH: dict[str, str] = {
     "permission_prompt": "先生，Claude 请求使用 {tool} 的权限。",
     "idle_prompt": "先生，Claude 正在等候您的指示。",
     "elicitation_dialog": "先生，有个对话框等您填写。",
+    "ask_user_question": "先生，有个选择题等您拍板。",
 }
 
 _EN: dict[str, str] = {
     "permission_prompt": "Sir, Claude requests permission for {tool}.",
     "idle_prompt": "Sir, Claude awaits your guidance.",
     "elicitation_dialog": "Sir, a dialog awaits your input.",
+    "ask_user_question": "Sir, a question awaits your decision.",
 }
 
 

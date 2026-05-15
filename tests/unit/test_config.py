@@ -12,11 +12,12 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     assert cfg.tts.provider == "xtts"
     assert cfg.behavior.dedup_window_seconds == 10
     assert cfg.behavior.queue_max_size == 5
-    assert cfg.behavior.voice_language == "auto"
+    assert cfg.behavior.voice_language == "en"
     assert cfg.behavior.events == [
         "permission_prompt",
         "idle_prompt",
         "elicitation_dialog",
+        "ask_user_question",
     ]
 
 

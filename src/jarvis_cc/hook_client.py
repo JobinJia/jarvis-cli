@@ -15,10 +15,111 @@ from typing import IO
 
 from .config import DEFAULT_CONFIG_PATH, load_config
 
+# CC's PreToolUse(AskUserQuestion) payload has no `notification_type` field
+# — the listener would drop it. We translate it here into a daemon event
+# whose `text` is pre-baked, so synthesis skips the LLM (the daemon already
+# special-cases `text=...` for the manual `jarvis-cc say --text` path).
+#
+# Output language is governed by `behavior.voice_language` ("en" | "zh" |
+# "auto"). Default is "en" — the user's chosen British voice identity.
+# "auto" picks per-event from the question text (CJK → zh).
+_EN_ORDINALS = ("Option one", "Option two", "Option three", "Option four")
+_ZH_ORDINALS = ("选项一", "选项二", "选项三", "选项四")
 
-def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
+
+def _has_cjk(text: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+def _resolve_lang(mode: str, questions: list) -> str:
+    """Pick output lang from the user's mode setting and question content."""
+    if mode == "zh":
+        return "zh"
+    if mode == "auto":
+        first_q = ""
+        if questions and isinstance(questions[0], dict):
+            first_q = questions[0].get("question") or ""
+        return "zh" if _has_cjk(first_q) else "en"
+    return "en"  # "en" and any unrecognized value
+
+
+def _render_askuserquestion(questions: list, lang: str) -> str | None:
+    if not questions or not isinstance(questions[0], dict):
+        return None
+    first = questions[0]
+    q_text = (first.get("question") or "").strip()
+    options = first.get("options") or []
+    if not q_text or not options:
+        return None
+
+    q_clean = q_text.rstrip("。.!?！？")
+    if lang == "zh":
+        ordinals = _ZH_ORDINALS
+        head = q_clean if q_clean.startswith(("先生", "Sir,", "Sir ")) else "先生，" + q_clean
+        sep = "。"
+        remaining_tmpl = "另有 {n} 个问题等候，先生。"
+    else:
+        ordinals = _EN_ORDINALS
+        head = (
+            q_clean
+            if q_clean.lower().startswith(("sir,", "sir "))
+            else "Sir, " + q_clean
+        )
+        sep = ". "
+        remaining_tmpl = "And {n} more questions on screen, sir."
+
+    parts = [head + sep]
+    for i, opt in enumerate(options[:4]):
+        if not isinstance(opt, dict):
+            continue
+        label = (opt.get("label") or "").strip()
+        if not label:
+            continue
+        parts.append(f"{ordinals[i]}: {label}{sep}")
+
+    remaining = len(questions) - 1
+    if remaining > 0:
+        parts.append(remaining_tmpl.format(n=remaining))
+    return "".join(parts).rstrip()
+
+
+def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
+    """Rewrite a raw CC hook payload into the daemon's normalized shape.
+
+    Returns the new dict, or None if the payload can't/shouldn't be forwarded.
+    Returns the original (unchanged) for payloads already in daemon shape.
+    """
+    if payload.get("hook_event_name") == "PreToolUse" and \
+            payload.get("tool_name") == "AskUserQuestion":
+        ti = payload.get("tool_input") or {}
+        questions = ti.get("questions")
+        if not isinstance(questions, list):
+            return None
+        lang = _resolve_lang(lang_mode, questions)
+        text = _render_askuserquestion(questions, lang)
+        if not text:
+            return None
+        return {
+            "notification_type": "ask_user_question",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+            "text": text,
+            "lang": lang,
+        }
+    return payload
+
+
+def forward_event(
+    stream: IO[str],
+    sock_path: str | Path,
+    *,
+    lang_mode: str = "en",
+) -> bool:
     """Forward an NDJSON event from `stream` to the unix socket at `sock_path`.
 
+    `lang_mode` ("en" | "zh" | "auto") only affects AskUserQuestion translation.
     Returns True if successfully sent. Returns False on any failure
     (invalid JSON, socket missing, write error) — never raises.
     """
@@ -30,6 +131,10 @@ def forward_event(stream: IO[str], sock_path: str | Path) -> bool:
         return False
 
     if not isinstance(payload, dict):
+        return False
+
+    payload = _translate_cc_payload(payload, lang_mode=lang_mode)
+    if payload is None:
         return False
 
     payload["_received_at"] = time.time()
@@ -59,7 +164,8 @@ def main() -> int:
     """
     try:
         cfg = load_config(DEFAULT_CONFIG_PATH)
-        forward_event(sys.stdin, cfg.paths.socket)
+        mode = getattr(cfg.behavior, "voice_language", "en") or "en"
+        forward_event(sys.stdin, cfg.paths.socket, lang_mode=mode)
     except Exception:  # noqa: BLE001 — structural guarantee
         pass
     return 0

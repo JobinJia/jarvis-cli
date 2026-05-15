@@ -78,12 +78,17 @@ class PrivacyConfig:
 class BehaviorConfig:
     dedup_window_seconds: int = 10
     queue_max_size: int = 5
-    voice_language: str = "auto"
+    # User-facing language switch for what Jarvis SPEAKS. Accepted values:
+    # "en" (English, default — matches the user's chosen British voice
+    # identity), "zh" (Chinese), or "auto" (pick per-event from content).
+    # Honored by both the LLM phrase path and the hook AskUserQuestion path.
+    voice_language: str = "en"
     events: list[str] = field(
         default_factory=lambda: [
             "permission_prompt",
             "idle_prompt",
             "elicitation_dialog",
+            "ask_user_question",
         ]
     )
     # DEPRECATED: kept so old config.toml files don't error on load. Not read

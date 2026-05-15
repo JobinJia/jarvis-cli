@@ -316,8 +316,10 @@ def _default_config_toml() -> str:
         [behavior]
         dedup_window_seconds = 10
         queue_max_size = 5
-        voice_language = "auto"
-        events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
+        # Language Jarvis SPEAKS in. "en" (default British voice identity),
+        # "zh", or "auto" (decide per-event from content).
+        voice_language = "en"
+        events = ["permission_prompt", "idle_prompt", "elicitation_dialog", "ask_user_question"]
         # phrase_max_chars is deprecated and ignored; use the budget below.
         phrase_target_chars = 70
         phrase_hard_cap = 120

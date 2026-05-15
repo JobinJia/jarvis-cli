@@ -8,6 +8,7 @@ NotificationType = Literal[
     "permission_prompt",
     "idle_prompt",
     "elicitation_dialog",
+    "ask_user_question",
 ]
 
 Lang = Literal["zh", "en"]
