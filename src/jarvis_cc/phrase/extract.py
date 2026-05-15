@@ -18,7 +18,8 @@ def _basename(path: str) -> str:
 
 
 def _bash(ti: dict[str, Any]) -> str:
-    cmd = str(ti.get("command", "")).strip()
+    raw = ti.get("command")
+    cmd = str(raw).strip() if raw else ""
     return cmd[:_MAX_RAW]
 
 
@@ -38,22 +39,26 @@ def _read(ti: dict[str, Any]) -> str:
 
 
 def _grep(ti: dict[str, Any]) -> str:
-    pat = str(ti.get("pattern", ""))[:80]
+    raw = ti.get("pattern")
+    pat = str(raw).strip()[:80] if raw else ""
     return f"grep '{pat}'" if pat else "grep"
 
 
 def _glob(ti: dict[str, Any]) -> str:
-    pat = str(ti.get("pattern", ""))[:80]
+    raw = ti.get("pattern")
+    pat = str(raw).strip()[:80] if raw else ""
     return f"glob '{pat}'" if pat else "glob"
 
 
 def _webfetch(ti: dict[str, Any]) -> str:
-    url = str(ti.get("url", ""))[:120]
+    raw = ti.get("url")
+    url = str(raw).strip()[:120] if raw else ""
     return f"fetch {url}" if url else "fetch"
 
 
 def _websearch(ti: dict[str, Any]) -> str:
-    q = str(ti.get("query", ""))[:120]
+    raw = ti.get("query")
+    q = str(raw).strip()[:120] if raw else ""
     return f"search {q!r}" if q else "search"
 
 

@@ -67,6 +67,30 @@ def test_extract_websearch_without_query_falls_back():
     assert extract("WebSearch", {"other": "x"}) == "search"
 
 
+def test_extract_bash_with_none_command_returns_empty():
+    assert extract("Bash", {"command": None}) == ""
+
+
+def test_extract_bash_with_empty_command_returns_empty():
+    assert extract("Bash", {"command": ""}) == ""
+
+
+def test_extract_grep_with_none_pattern_falls_back():
+    assert extract("Grep", {"pattern": None}) == "grep"
+
+
+def test_extract_glob_with_none_pattern_falls_back():
+    assert extract("Glob", {"pattern": None}) == "glob"
+
+
+def test_extract_webfetch_with_none_url_falls_back():
+    assert extract("WebFetch", {"url": None}) == "fetch"
+
+
+def test_extract_websearch_with_none_query_falls_back():
+    assert extract("WebSearch", {"query": None}) == "search"
+
+
 def test_extract_unknown_tool_dumps_json():
     out = extract("SomeNewTool", {"foo": "bar", "n": 1})
     assert '"foo"' in out
