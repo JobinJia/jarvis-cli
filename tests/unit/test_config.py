@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_cc.config import Config, load_config
+from jarvis_cc.config import load_config
 
 
 def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
