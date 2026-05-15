@@ -62,6 +62,42 @@ def _websearch(ti: dict[str, Any]) -> str:
     return f"search {q!r}" if q else "search"
 
 
+_AUQ_Q_CAP = 120  # per-question text cap
+_AUQ_LABEL_CAP = 60  # per-option label cap
+
+
+def _askuserquestion(ti: dict[str, Any]) -> str:
+    """Summarise an AskUserQuestion tool_input for the phrase router.
+
+    Returns a short structured string ('ask: <q> | options: <l1>; <l2>; ...')
+    so the LLM can rephrase question + options into a Jarvis-toned line.
+    """
+    questions = ti.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return ""
+    first = questions[0] if isinstance(questions[0], dict) else None
+    if not first:
+        return ""
+    q_text = (first.get("question") or "").strip()[:_AUQ_Q_CAP]
+    if not q_text:
+        return ""
+    options = first.get("options") or []
+    labels: list[str] = []
+    for opt in options[:4]:
+        if not isinstance(opt, dict):
+            continue
+        label = (opt.get("label") or "").strip()[:_AUQ_LABEL_CAP]
+        if label:
+            labels.append(label)
+    parts = [f"ask: {q_text}"]
+    if labels:
+        parts.append("options: " + "; ".join(labels))
+    extra = len(questions) - 1
+    if extra > 0:
+        parts.append(f"+{extra} more questions")
+    return " | ".join(parts)
+
+
 _EXTRACTORS: dict[str, Callable[[dict[str, Any]], str]] = {
     "Bash": _bash,
     "Write": _write,
@@ -72,6 +108,7 @@ _EXTRACTORS: dict[str, Callable[[dict[str, Any]], str]] = {
     "Glob": _glob,
     "WebFetch": _webfetch,
     "WebSearch": _websearch,
+    "AskUserQuestion": _askuserquestion,
 }
 
 

@@ -35,6 +35,14 @@ _FEW_SHOT_ZH = [
     {"role": "user",
      "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":""}'},
     {"role": "assistant", "content": "先生，Claude 静候您的吩咐。"},
+    {"role": "user",
+     "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: Pick a colour | options: Red; Blue; Green"}'},
+    {"role": "assistant",
+     "content": "先生，他请您挑一种颜色——选项一：红，选项二：蓝，选项三：绿，您裁夺。"},
+    {"role": "user",
+     "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: 你想对博客做哪方面的调整 | options: 新增博客文章; 调整主题样式; 更新站点配置; 部署或构建相关"}'},
+    {"role": "assistant",
+     "content": "先生，他想问博客往哪儿调——选项一：新增文章，选项二：改主题，选项三：更新配置，选项四：部署相关。"},
 ]
 
 _FEW_SHOT_EN = [
@@ -50,6 +58,14 @@ _FEW_SHOT_EN = [
     {"role": "user",
      "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":""}'},
     {"role": "assistant", "content": "Sir, Claude awaits your guidance."},
+    {"role": "user",
+     "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: Pick a colour | options: Red; Blue; Green"}'},
+    {"role": "assistant",
+     "content": "Sir, he asks for a colour — option one: red, option two: blue, option three: green. Your choice?"},
+    {"role": "user",
+     "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: 你想对博客做哪方面的调整 | options: 新增博客文章; 调整主题样式; 更新站点配置; 部署或构建相关"}'},
+    {"role": "assistant",
+     "content": "Sir, he asks where to focus on the blog — option one: add a post, option two: adjust the theme, option three: update site config, option four: build and deploy."},
 ]
 
 

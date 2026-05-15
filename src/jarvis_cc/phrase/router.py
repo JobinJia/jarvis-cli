@@ -32,10 +32,11 @@ class PhraseRouter:
             summary,
             enabled=self.cfg.behavior.privacy.cloud_redaction,
         )
+        target_chars, hard_cap = self._budget_for(event)
         messages = build_messages(
             event, lang, summary,
-            target_chars=self.cfg.behavior.phrase_target_chars,
-            hard_cap=self.cfg.behavior.phrase_hard_cap,
+            target_chars=target_chars,
+            hard_cap=hard_cap,
         )
         for provider in (self.primary, self.fallback):
             if provider is None:
@@ -49,3 +50,14 @@ class PhraseRouter:
                     "Phrase provider {} failed: {}", provider.name, exc
                 )
         return render_template(event, lang)
+
+    def _budget_for(self, event: Event) -> tuple[int, int]:
+        # AskUserQuestion is intrinsically longer (question + up to 4 option
+        # labels) than other events; give it more room than the default
+        # phrase budget so the LLM can enumerate options without truncation.
+        if event.notification_type == "ask_user_question":
+            return 200, 400
+        return (
+            self.cfg.behavior.phrase_target_chars,
+            self.cfg.behavior.phrase_hard_cap,
+        )

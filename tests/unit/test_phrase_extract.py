@@ -100,3 +100,76 @@ def test_extract_unknown_tool_dumps_json():
 
 def test_extract_write_without_file_path_falls_back():
     assert extract("Write", {"content": "x"}) == "write"
+
+
+def test_extract_askuserquestion_returns_question_plus_options():
+    out = extract(
+        "AskUserQuestion",
+        {
+            "questions": [
+                {
+                    "question": "Pick a colour",
+                    "options": [{"label": "Red"}, {"label": "Blue"}],
+                }
+            ]
+        },
+    )
+    assert "Pick a colour" in out
+    assert "Red" in out and "Blue" in out
+    # Structured so the LLM sees clear question/options split.
+    assert "ask:" in out and "options:" in out
+
+
+def test_extract_askuserquestion_keeps_cjk_content():
+    out = extract(
+        "AskUserQuestion",
+        {
+            "questions": [
+                {
+                    "question": "你想对博客做哪方面的调整",
+                    "options": [{"label": "新增博客文章"}, {"label": "调整主题样式"}],
+                }
+            ]
+        },
+    )
+    assert "你想对博客做哪方面的调整" in out
+    assert "新增博客文章" in out
+    assert "调整主题样式" in out
+
+
+def test_extract_askuserquestion_marks_extra_questions(tmp_path=None):
+    out = extract(
+        "AskUserQuestion",
+        {
+            "questions": [
+                {"question": "Q1", "options": [{"label": "A"}]},
+                {"question": "Q2", "options": [{"label": "B"}]},
+                {"question": "Q3", "options": [{"label": "C"}]},
+            ]
+        },
+    )
+    assert "Q1" in out
+    # Only the first question is unfolded into options; the rest are counted.
+    assert "Q2" not in out
+    assert "+2 more" in out
+
+
+def test_extract_askuserquestion_empty_questions_returns_empty():
+    assert extract("AskUserQuestion", {"questions": []}) == ""
+    assert extract("AskUserQuestion", {}) == ""
+
+
+def test_extract_askuserquestion_truncates_overlong_fields():
+    out = extract(
+        "AskUserQuestion",
+        {
+            "questions": [
+                {
+                    "question": "x" * 300,
+                    "options": [{"label": "y" * 300}],
+                }
+            ]
+        },
+    )
+    # Each field is capped so the prompt stays bounded.
+    assert len(out) <= 400

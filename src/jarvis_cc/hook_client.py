@@ -83,31 +83,52 @@ def _render_askuserquestion(questions: list, lang: str) -> str | None:
     return "".join(parts).rstrip()
 
 
+def _first_question_is_usable(questions: list) -> bool:
+    if not questions or not isinstance(questions[0], dict):
+        return False
+    first = questions[0]
+    q_text = (first.get("question") or "").strip()
+    options = first.get("options") or []
+    return bool(q_text and options)
+
+
 def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
     """Rewrite a raw CC hook payload into the daemon's normalized shape.
 
     Returns the new dict, or None if the payload can't/shouldn't be forwarded.
     Returns the original (unchanged) for payloads already in daemon shape.
+
+    For AskUserQuestion the behavior depends on `lang_mode`:
+      - "auto" → render verbatim text + lang in the hook (no LLM round-trip);
+        CJK question text picks zh, otherwise en.
+      - "en" / "zh" → forward the questions WITHOUT text/lang so the daemon's
+        phrase router calls Ollama/DeepSeek to translate-and-rephrase into a
+        Jarvis-toned line in the user's chosen output language.
     """
     if payload.get("hook_event_name") == "PreToolUse" and \
             payload.get("tool_name") == "AskUserQuestion":
         ti = payload.get("tool_input") or {}
         questions = ti.get("questions")
-        if not isinstance(questions, list):
+        if not isinstance(questions, list) or not _first_question_is_usable(questions):
             return None
-        lang = _resolve_lang(lang_mode, questions)
-        text = _render_askuserquestion(questions, lang)
-        if not text:
-            return None
-        return {
+
+        base: dict = {
             "notification_type": "ask_user_question",
             "tool_name": "AskUserQuestion",
-            "tool_input": {},
             "cwd": payload.get("cwd"),
             "session_id": payload.get("session_id"),
-            "text": text,
-            "lang": lang,
         }
+
+        if lang_mode == "auto":
+            lang = _resolve_lang("auto", questions)
+            text = _render_askuserquestion(questions, lang)
+            if not text:
+                return None
+            return {**base, "tool_input": {}, "text": text, "lang": lang}
+
+        # "en" / "zh" / unknown: forward verbatim questions so the daemon's
+        # phrase router can translate them into the configured voice_language.
+        return {**base, "tool_input": {"questions": questions}}
     return payload
 
 
