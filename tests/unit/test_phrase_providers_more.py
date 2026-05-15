@@ -4,11 +4,11 @@ import respx
 from jarvis_cc.config import AnthropicConfig, OpenAIConfig
 from jarvis_cc.phrase.providers.anthropic import AnthropicProvider
 from jarvis_cc.phrase.providers.openai import OpenAIProvider
-from jarvis_cc.types import Event
 
-
-def _ev() -> Event:
-    return Event(notification_type="permission_prompt", tool_name="Bash")
+_MESSAGES = [
+    {"role": "system", "content": "you are jarvis"},
+    {"role": "user", "content": '{"notification_type":"permission_prompt","tool_name":"Bash","summary":"rm /tmp/x"}'},
+]
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,7 @@ async def test_anthropic_returns_text(monkeypatch: pytest.MonkeyPatch):
             },
         )
         p = AnthropicProvider(cfg)
-        out = await p.generate(_ev(), lang="en", max_chars=30)
+        out = await p.generate(_MESSAGES)
     assert out == "Sir, your shell awaits."
 
 
@@ -45,5 +45,5 @@ async def test_openai_returns_text(monkeypatch: pytest.MonkeyPatch):
             },
         )
         p = OpenAIProvider(cfg)
-        out = await p.generate(_ev(), lang="en", max_chars=30)
+        out = await p.generate(_MESSAGES)
     assert out == "Sir, at your discretion."

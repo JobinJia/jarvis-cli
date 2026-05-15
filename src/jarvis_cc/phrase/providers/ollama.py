@@ -4,8 +4,6 @@ from __future__ import annotations
 import httpx
 
 from ...config import OllamaConfig
-from ...types import Event, Lang
-from ..prompt import build_messages
 from .base import PhraseProvider
 
 
@@ -15,8 +13,7 @@ class OllamaProvider(PhraseProvider):
     def __init__(self, cfg: OllamaConfig) -> None:
         self.cfg = cfg
 
-    async def generate(self, event: Event, lang: Lang, max_chars: int) -> str:
-        messages = build_messages(event, lang, max_chars)
+    async def generate(self, messages: list[dict[str, str]]) -> str:
         async with httpx.AsyncClient(
             base_url=self.cfg.base_url, timeout=self.cfg.timeout_seconds
         ) as client:
@@ -26,9 +23,6 @@ class OllamaProvider(PhraseProvider):
                     "model": self.cfg.model,
                     "messages": messages,
                     "stream": False,
-                    # think=False disables Qwen3/DeepSeek-R1 style chain-of-thought
-                    # output so num_predict isn't consumed by <think>...</think>.
-                    # Ignored by models that don't emit thinking tokens.
                     "think": False,
                     "options": {"temperature": 0.7, "num_predict": 200},
                 },

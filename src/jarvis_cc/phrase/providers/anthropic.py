@@ -6,8 +6,6 @@ import os
 import httpx
 
 from ...config import AnthropicConfig
-from ...types import Event, Lang
-from ..prompt import build_messages
 from .base import PhraseProvider
 
 
@@ -17,12 +15,10 @@ class AnthropicProvider(PhraseProvider):
     def __init__(self, cfg: AnthropicConfig) -> None:
         self.cfg = cfg
 
-    async def generate(self, event: Event, lang: Lang, max_chars: int) -> str:
+    async def generate(self, messages: list[dict[str, str]]) -> str:
         key = os.getenv(self.cfg.api_key_env)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
-        messages = build_messages(event, lang, max_chars)
-        # Anthropic API splits "system" out of messages
         system_msg = next(m["content"] for m in messages if m["role"] == "system")
         chat = [m for m in messages if m["role"] != "system"]
         async with httpx.AsyncClient(

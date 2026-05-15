@@ -3,17 +3,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ...types import Event, Lang
-
 
 class PhraseProvider(ABC):
-    """A provider returns a single Jarvis-tone sentence for an Event."""
+    """A provider returns a single Jarvis-tone sentence given pre-built
+    OpenAI-compatible chat `messages`. The router is responsible for
+    constructing `messages` (extract + redact + build_messages); providers
+    are dumb HTTP adapters.
+    """
 
     name: str
 
     @abstractmethod
-    async def generate(self, event: Event, lang: Lang, max_chars: int) -> str: ...
+    async def generate(self, messages: list[dict[str, str]]) -> str: ...
 
     async def healthcheck(self) -> bool:
-        """Return True if this provider is likely to succeed right now."""
         return True
