@@ -17,7 +17,7 @@ from ..phrase.providers.deepseek import DeepSeekProvider
 from ..phrase.providers.ollama import OllamaProvider
 from ..phrase.providers.openai import OpenAIProvider
 from ..phrase.router import PhraseRouter
-from ..player import play
+from ..player import play, play_stream
 from ..tts.engine import TTSEngine
 from ..tts.providers.base import TTSProvider
 from ..tts.providers.elevenlabs import ElevenLabsProvider
@@ -111,6 +111,8 @@ class Daemon:
                     )
                     text = await self.router.phrase(event, lang=lang)
                 self._last_text = text
+                if await self._try_stream(text, lang, event.voice_id):
+                    continue
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
                 await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
@@ -123,6 +125,23 @@ class Daemon:
                         pass
             except Exception as exc:
                 logger.exception("worker failed: {}", exc)
+
+    async def _try_stream(
+        self, text: str, lang, voice_id: str | None
+    ) -> bool:
+        """If the primary TTS supports streaming, pipe chunks straight to
+        ffplay so playback begins before synthesis completes. Returns True
+        on success; False (with a warning) on any failure so the caller can
+        fall back to the file-based synth+afplay path."""
+        primary = self.tts.primary
+        if not getattr(primary, "supports_streaming", False):
+            return False
+        try:
+            await play_stream(primary.stream(text, lang, voice_id=voice_id))
+            return True
+        except Exception as exc:
+            logger.warning("Streaming TTS failed, falling back to synth: {}", exc)
+            return False
 
     async def run(self) -> None:
         await self.health.start()

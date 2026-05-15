@@ -44,3 +44,35 @@ async def test_elevenlabs_raises_when_voice_id_missing(
         await ElevenLabsProvider(cfg).synthesize(
             "hi", lang="en", out_path=tmp_path / "o.mp3"
         )
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_supports_streaming_flag():
+    cfg = ElevenLabsConfig(voice_id="vid")
+    assert ElevenLabsProvider(cfg).supports_streaming is True
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_stream_yields_chunks(monkeypatch: pytest.MonkeyPatch):
+    """The streaming endpoint must yield bytes incrementally so the player
+    can start playback before the full audio arrives."""
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "k")
+    cfg = ElevenLabsConfig(voice_id="vid")
+    fake_bytes = b"MP3CHUNK1" + b"MP3CHUNK2" + b"MP3CHUNK3"
+    with respx.mock(base_url="https://api.elevenlabs.io") as router:
+        router.post("/v1/text-to-speech/vid/stream").respond(200, content=fake_bytes)
+        chunks: list[bytes] = []
+        async for chunk in ElevenLabsProvider(cfg).stream("hi", lang="en"):
+            chunks.append(chunk)
+    assert b"".join(chunks) == fake_bytes
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_stream_raises_when_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    cfg = ElevenLabsConfig(voice_id="vid")
+    with pytest.raises(RuntimeError):
+        async for _ in ElevenLabsProvider(cfg).stream("hi", lang="en"):
+            pass

@@ -287,6 +287,7 @@ def _default_config_toml() -> str:
         """\
         # jarvis-cc config.toml — auto-generated, edit freely
         [llm]
+        # Primary defaults to deepseek for low TTFT; ollama is the offline fallback.
         provider = "deepseek"
         fallback = "ollama"
 
