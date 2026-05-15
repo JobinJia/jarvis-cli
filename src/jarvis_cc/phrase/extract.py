@@ -52,6 +52,11 @@ def _webfetch(ti: dict[str, Any]) -> str:
     return f"fetch {url}" if url else "fetch"
 
 
+def _websearch(ti: dict[str, Any]) -> str:
+    q = str(ti.get("query", ""))[:120]
+    return f"search {q!r}" if q else "search"
+
+
 _EXTRACTORS: dict[str, Callable[[dict[str, Any]], str]] = {
     "Bash": _bash,
     "Write": _write,
@@ -61,7 +66,7 @@ _EXTRACTORS: dict[str, Callable[[dict[str, Any]], str]] = {
     "Grep": _grep,
     "Glob": _glob,
     "WebFetch": _webfetch,
-    "WebSearch": _webfetch,
+    "WebSearch": _websearch,
 }
 
 

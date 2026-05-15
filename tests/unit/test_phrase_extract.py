@@ -57,6 +57,16 @@ def test_extract_webfetch_includes_url():
     assert out.startswith("fetch https://example.com")
 
 
+def test_extract_websearch_uses_query():
+    out = extract("WebSearch", {"query": "site:example.com baz"})
+    assert out.startswith("search")
+    assert "baz" in out
+
+
+def test_extract_websearch_without_query_falls_back():
+    assert extract("WebSearch", {"other": "x"}) == "search"
+
+
 def test_extract_unknown_tool_dumps_json():
     out = extract("SomeNewTool", {"foo": "bar", "n": 1})
     assert '"foo"' in out
