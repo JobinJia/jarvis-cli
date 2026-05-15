@@ -46,3 +46,30 @@ def test_load_config_expands_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = load_config(tmp_path / "missing.toml")
     assert cfg.paths.socket.startswith(str(tmp_path))
+
+
+def test_load_config_defaults_phrase_budget(tmp_path: Path):
+    cfg = load_config(tmp_path / "missing.toml")
+    assert cfg.behavior.phrase_target_chars == 70
+    assert cfg.behavior.phrase_hard_cap == 120
+    assert cfg.behavior.privacy.cloud_redaction is True
+    # legacy field kept silently for back-compat
+    assert hasattr(cfg.behavior, "phrase_max_chars")
+
+
+def test_load_config_reads_privacy_override(tmp_path: Path):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        """
+[behavior]
+phrase_target_chars = 90
+phrase_hard_cap = 160
+
+[behavior.privacy]
+cloud_redaction = false
+"""
+    )
+    cfg = load_config(p)
+    assert cfg.behavior.phrase_target_chars == 90
+    assert cfg.behavior.phrase_hard_cap == 160
+    assert cfg.behavior.privacy.cloud_redaction is False

@@ -70,6 +70,11 @@ class TTSConfig:
 
 
 @dataclass
+class PrivacyConfig:
+    cloud_redaction: bool = True
+
+
+@dataclass
 class BehaviorConfig:
     dedup_window_seconds: int = 10
     queue_max_size: int = 5
@@ -81,7 +86,12 @@ class BehaviorConfig:
             "elicitation_dialog",
         ]
     )
+    # DEPRECATED: kept so old config.toml files don't error on load. Not read
+    # at runtime; replaced by phrase_target_chars + phrase_hard_cap below.
     phrase_max_chars: int = 30
+    phrase_target_chars: int = 70
+    phrase_hard_cap: int = 120
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
 
 @dataclass
