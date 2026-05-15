@@ -3,11 +3,14 @@ from jarvis_cc.phrase.redact import scrub
 
 def test_scrub_replaces_home_path(monkeypatch):
     monkeypatch.setenv("HOME", "/Users/jobin")
-    # Force module-level _HOME refresh via import-time computation
-    import importlib
-    import jarvis_cc.phrase.redact as r
-    importlib.reload(r)
-    assert r.scrub("rm -rf /Users/jobin/tmp/x") == "rm -rf ~/tmp/x"
+    assert scrub("rm -rf /Users/jobin/tmp/x") == "rm -rf ~/tmp/x"
+
+
+def test_scrub_does_not_corrupt_when_home_is_root(monkeypatch):
+    monkeypatch.setenv("HOME", "/")
+    # Should NOT replace every '/' with '~'
+    out = scrub("rm -rf /tmp/foo")
+    assert out == "rm -rf /tmp/foo"
 
 
 def test_scrub_redacts_openai_key():

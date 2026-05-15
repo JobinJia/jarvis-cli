@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import re
 
-_HOME = os.path.expanduser("~")
 _MAX_OUT = 200
 
 _PATTERNS = [
@@ -33,7 +32,10 @@ def scrub(text: str, *, enabled: bool = True) -> str:
         return text
     if not enabled:
         return text[:_MAX_OUT]
-    out = text.replace(_HOME, "~")
+    home = os.path.expanduser("~")
+    out = text
+    if home and home != "/":
+        out = out.replace(home, "~")
     for p in _PATTERNS:
         out = p.sub("<REDACTED>", out)
     return out[:_MAX_OUT]
