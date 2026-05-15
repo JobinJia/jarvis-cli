@@ -13,9 +13,11 @@ class _Stub(PhraseProvider):
         self.name = name
         self.mode = mode
         self.calls = 0
+        self.last_messages: list[dict[str, str]] | None = None
 
-    async def generate(self, event, lang, max_chars):
+    async def generate(self, messages):
         self.calls += 1
+        self.last_messages = messages
         if self.mode == "fail":
             raise RuntimeError(f"{self.name} down")
         return f"<{self.name}>"
