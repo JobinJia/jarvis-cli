@@ -2,24 +2,61 @@ from jarvis_cc.phrase.prompt import build_messages
 from jarvis_cc.types import Event
 
 
-def test_build_messages_zh_includes_jarvis_system_and_event():
-    ev = Event(
-        notification_type="permission_prompt",
-        tool_name="Bash",
-        tool_input={"command": "rm foo"},
-        cwd="/x",
+def _ev(**kw) -> Event:
+    return Event(
+        notification_type=kw.get("notification_type", "permission_prompt"),
+        tool_name=kw.get("tool_name", "Bash"),
+        tool_input=kw.get("tool_input", {}),
     )
-    msgs = build_messages(ev, lang="zh", max_chars=30)
+
+
+def test_build_messages_zh_system_includes_target_and_cap():
+    ev = _ev()
+    msgs = build_messages(ev, lang="zh", summary="rm -rf /tmp/x",
+                          target_chars=70, hard_cap=120)
     assert msgs[0]["role"] == "system"
     assert "J.A.R.V.I.S" in msgs[0]["content"] or "管家" in msgs[0]["content"]
     assert "中文" in msgs[0]["content"]
-    assert "30" in msgs[0]["content"]
-    assert msgs[-1]["role"] == "user"
-    assert "permission_prompt" in msgs[-1]["content"]
-    assert "Bash" in msgs[-1]["content"]
+    assert "70" in msgs[0]["content"]
+    assert "120" in msgs[0]["content"]
 
 
 def test_build_messages_en_swaps_language_clause():
-    ev = Event(notification_type="idle_prompt", tool_name=None)
-    msgs = build_messages(ev, lang="en", max_chars=30)
+    msgs = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120)
     assert "English" in msgs[0]["content"]
+
+
+def test_build_messages_user_blob_contains_summary_not_raw_tool_input():
+    ev = _ev(tool_input={"command": "rm -rf /Users/jobin/tmp", "extra": "huge"})
+    msgs = build_messages(ev, lang="en", summary="rm -rf ~/tmp",
+                          target_chars=70, hard_cap=120)
+    last = msgs[-1]["content"]
+    assert "rm -rf ~/tmp" in last
+    # The full raw tool_input should NOT leak into the prompt
+    assert "huge" not in last
+    assert "/Users/jobin" not in last
+
+
+def test_build_messages_includes_tool_name_in_user_blob():
+    msgs = build_messages(_ev(tool_name="Write"), lang="en",
+                          summary="write c.toml", target_chars=70, hard_cap=120)
+    assert "Write" in msgs[-1]["content"]
+
+
+def test_build_messages_few_shot_present_for_both_langs():
+    msgs_zh = build_messages(_ev(), lang="zh", summary="",
+                             target_chars=70, hard_cap=120)
+    msgs_en = build_messages(_ev(), lang="en", summary="",
+                             target_chars=70, hard_cap=120)
+    # system + few-shot pairs + final user → at least 5 messages each
+    assert len(msgs_zh) >= 5
+    assert len(msgs_en) >= 5
+
+
+def test_build_messages_empty_summary_still_valid():
+    msgs = build_messages(_ev(notification_type="idle_prompt", tool_name=None),
+                          lang="zh", summary="", target_chars=70, hard_cap=120)
+    assert msgs[-1]["role"] == "user"
+    last = msgs[-1]["content"]
+    assert '"summary": ""' in last or '"summary":""' in last
