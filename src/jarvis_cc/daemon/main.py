@@ -134,7 +134,14 @@ class Daemon:
                     )
                     text = await self.router.phrase(event, lang=lang)
                 self._last_text = text
-                if await self._try_stream(text, lang, event.voice_id, on_spawn=_register):
+                if await self._try_stream(
+                    text, lang, event.voice_id,
+                    on_spawn=_register, session_id=sid,
+                ):
+                    continue
+                # Skip synth fallback if a cancel arrived between stream attempt
+                # and now — otherwise the same line gets re-synthesized + replayed.
+                if sid and sid in self._cancelled_sessions:
                     continue
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
@@ -159,12 +166,19 @@ class Daemon:
 
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
-        *, on_spawn=None,
+        *, on_spawn=None, session_id: str | None = None,
     ) -> bool:
         """If the primary TTS supports streaming, pipe chunks straight to
         ffplay so playback begins before synthesis completes. Returns True
-        on success; False (with a warning) on any failure so the caller can
-        fall back to the file-based synth+afplay path."""
+        on success (or on cancel — see below); False on any other failure so
+        the caller can fall back to the file-based synth+afplay path.
+
+        When the worker kills ffplay to cancel playback, play_stream raises
+        a RuntimeError. That is NOT a TTS failure — re-synthesizing and
+        falling back to afplay would replay the line we just killed.
+        Detect this by checking `_cancelled_sessions` and return True so the
+        caller treats it as "playback already concluded".
+        """
         primary = self.tts.primary
         if not getattr(primary, "supports_streaming", False):
             return False
@@ -175,6 +189,9 @@ class Daemon:
             )
             return True
         except Exception as exc:
+            if session_id and session_id in self._cancelled_sessions:
+                logger.debug("stream cancelled for session {}", session_id)
+                return True
             logger.warning("Streaming TTS failed, falling back to synth: {}", exc)
             return False
 

@@ -62,6 +62,65 @@ async def test_cancel_session_drops_matching_queued_events():
 
 
 @pytest.mark.asyncio
+async def test_try_stream_returns_true_when_session_cancelled():
+    """Regression: when the worker kills ffplay (the cancel path), play_stream
+    raises and `_try_stream` previously returned False, which sent the worker
+    into the synth+afplay fallback — the same line got replayed. Now it must
+    return True so the worker skips the fallback."""
+    d = Daemon(Config())
+    d._cancelled_sessions.add("abc")
+
+    # Stub a streaming primary; play_stream is patched to raise.
+    d.tts.primary = MagicMock()
+    d.tts.primary.supports_streaming = True
+
+    async def _stream_iter(*args, **kwargs):
+        yield b"x"
+
+    d.tts.primary.stream = _stream_iter
+
+    from unittest.mock import patch
+
+    async def _fake_play_stream(chunks, *, on_spawn=None):
+        # Drain the iterator so it doesn't warn about un-awaited generator.
+        async for _ in chunks:
+            pass
+        raise RuntimeError("ffplay exited with code -9")
+
+    with patch("jarvis_cc.daemon.main.play_stream", side_effect=_fake_play_stream):
+        result = await d._try_stream("hi", "en", None, session_id="abc")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_try_stream_returns_false_on_real_tts_failure():
+    """A genuine TTS error (no cancel pending) must still return False so the
+    worker can fall back to synth+afplay."""
+    d = Daemon(Config())  # _cancelled_sessions is empty
+
+    d.tts.primary = MagicMock()
+    d.tts.primary.supports_streaming = True
+
+    async def _stream_iter(*args, **kwargs):
+        yield b"x"
+
+    d.tts.primary.stream = _stream_iter
+
+    from unittest.mock import patch
+
+    async def _fake_play_stream(chunks, *, on_spawn=None):
+        async for _ in chunks:
+            pass
+        raise RuntimeError("elevenlabs 500")
+
+    with patch("jarvis_cc.daemon.main.play_stream", side_effect=_fake_play_stream):
+        result = await d._try_stream("hi", "en", None, session_id="other-sid")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
 async def test_cancel_session_handles_process_lookup_error():
     d = Daemon(Config())
 
