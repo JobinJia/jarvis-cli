@@ -29,7 +29,7 @@ async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch):
         out_path.write_bytes(b"WAV")
         return out_path
 
-    async def fake_play(audio):
+    async def fake_play(audio, *, on_spawn=None):
         played.append(audio)
 
     d = Daemon(cfg, health_port=0)

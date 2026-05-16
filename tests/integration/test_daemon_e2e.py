@@ -31,7 +31,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
 
     played: list[Path] = []
 
-    async def fake_play(audio: Path) -> None:
+    async def fake_play(audio: Path, *, on_spawn=None) -> None:
         played.append(audio)
 
     async def fake_synth(text: str, lang, out_path: Path, voice_id=None):
@@ -98,7 +98,7 @@ async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch):
         out_path.write_bytes(b"x")
         return out_path
 
-    async def fake_play(audio):
+    async def fake_play(audio, *, on_spawn=None):
         pass
 
     d = Daemon(cfg, health_port=0)
