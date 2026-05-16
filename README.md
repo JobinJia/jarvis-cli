@@ -15,6 +15,7 @@ When Claude Code needs your attention — permission prompts, idle waits, MCP el
 
 ```
 Claude Code ──Notification hook──► jarvis-cc-hook (one-shot, <10ms)
+            └ UserPromptSubmit / PostToolUse hooks ─► cancel signal
                                           │
                                           ▼ Unix socket
                               jarvis-cc-daemon (launchd, KeepAlive)
@@ -86,6 +87,10 @@ This will:
 
 Now **restart any running Claude Code sessions** so they pick up the patched `settings.json`.
 
+> **Upgrading from an older install?** Re-run `uv run jarvis-cc install` to
+> register the new `UserPromptSubmit` and `PostToolUse` hooks that drive
+> the "stop voice when I respond" behavior.
+
 ## Verify
 
 ```bash
@@ -155,6 +160,7 @@ voice_language = "auto"        # auto | zh | en
 events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
 phrase_target_chars = 70       # LLM aims for this length
 phrase_hard_cap = 120          # LLM is told not to exceed this; no post-truncation
+cancel_on_user_action = true   # stop playback when you respond in the originating CC session
 
 [behavior.privacy]
 cloud_redaction = true         # scrub HOME path + secret-shaped tokens before send
