@@ -96,6 +96,9 @@ class BehaviorConfig:
     phrase_max_chars: int = 30
     phrase_target_chars: int = 70
     phrase_hard_cap: int = 120
+    # When True (default), the hook sends a cancel signal on UserPromptSubmit /
+    # PostToolUse so the daemon stops any in-flight audio for that session.
+    cancel_on_user_action: bool = True
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
 

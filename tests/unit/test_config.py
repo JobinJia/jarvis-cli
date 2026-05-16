@@ -58,6 +58,20 @@ def test_load_config_defaults_phrase_budget(tmp_path: Path):
     assert hasattr(cfg.behavior, "phrase_max_chars")
 
 
+def test_behavior_default_has_cancel_on_user_action_true(tmp_path: Path):
+    cfg_path = tmp_path / "cfg.toml"
+    cfg_path.write_text("")
+    cfg = load_config(cfg_path)
+    assert cfg.behavior.cancel_on_user_action is True
+
+
+def test_behavior_cancel_on_user_action_overridable(tmp_path: Path):
+    cfg_path = tmp_path / "cfg.toml"
+    cfg_path.write_text("[behavior]\ncancel_on_user_action = false\n")
+    cfg = load_config(cfg_path)
+    assert cfg.behavior.cancel_on_user_action is False
+
+
 def test_load_config_reads_privacy_override(tmp_path: Path):
     p = tmp_path / "c.toml"
     p.write_text(
