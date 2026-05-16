@@ -47,8 +47,15 @@ def parse_payload(raw: str) -> Event | None:
 async def serve_unix_socket(
     sock_path: Path,
     on_event: Callable[[Event], Awaitable[None]],
+    *,
+    on_cancel: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
-    """Run a unix-socket server forever, dispatching parsed events to `on_event`."""
+    """Run a unix-socket server forever, dispatching parsed rows.
+
+    Event rows (with `notification_type`) go to `on_event`.
+    `{"command":"cancel","session_id":"..."}` rows go to `on_cancel`.
+    Rows missing session_id on cancel are dropped silently.
+    """
     sock_path = Path(sock_path)
     sock_path.parent.mkdir(parents=True, exist_ok=True)
     if sock_path.exists():
@@ -59,6 +66,16 @@ async def serve_unix_socket(
             data = await reader.read(65536)
             for line in data.decode("utf-8", errors="replace").splitlines():
                 if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("Dropped malformed JSON: {!r}", line[:120])
+                    continue
+                if isinstance(payload, dict) and payload.get("command") == "cancel":
+                    sid = payload.get("session_id")
+                    if sid and on_cancel is not None:
+                        await on_cancel(sid)
                     continue
                 ev = parse_payload(line)
                 if ev is None:

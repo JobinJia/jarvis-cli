@@ -70,3 +70,72 @@ async def test_serve_unix_socket_yields_events(tmp_path: Path):
 
     assert len(received) == 1
     assert received[0].notification_type == "idle_prompt"
+
+
+@pytest.mark.asyncio
+async def test_serve_unix_socket_routes_cancel_command(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    events: list[Event] = []
+    cancels: list[str] = []
+
+    async def on_event(ev: Event):
+        events.append(ev)
+
+    async def on_cancel(sid: str):
+        cancels.append(sid)
+
+    server_task = asyncio.create_task(
+        serve_unix_socket(sock_path, on_event, on_cancel=on_cancel)
+    )
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert sock_path.exists()
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(str(sock_path))
+    s.sendall(
+        (json.dumps({"command": "cancel", "session_id": "abc"}) + "\n").encode()
+    )
+    s.close()
+
+    await asyncio.sleep(0.1)
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert cancels == ["abc"]
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_serve_unix_socket_ignores_cancel_without_session_id(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    cancels: list[str] = []
+
+    async def on_event(ev: Event): pass
+    async def on_cancel(sid: str): cancels.append(sid)
+
+    server_task = asyncio.create_task(
+        serve_unix_socket(sock_path, on_event, on_cancel=on_cancel)
+    )
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(str(sock_path))
+    s.sendall((json.dumps({"command": "cancel"}) + "\n").encode())
+    s.close()
+    await asyncio.sleep(0.1)
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert cancels == []
