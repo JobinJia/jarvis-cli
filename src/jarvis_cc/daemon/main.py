@@ -78,6 +78,9 @@ class Daemon:
             state_getter=self._snapshot,
         )
         self._last_text: str | None = None
+        self._current_proc: asyncio.subprocess.Process | None = None
+        self._current_session_id: str | None = None
+        self._cancelled_sessions: set[str] = set()
 
     def _snapshot(self) -> dict:
         return {
@@ -86,6 +89,17 @@ class Daemon:
             "dropped": self.queue.dropped_count,
             "last_text": self._last_text,
         }
+
+    async def cancel_session(self, session_id: str) -> None:
+        """Cancel any in-flight audio for `session_id` and drop its queued events."""
+        self._cancelled_sessions.add(session_id)
+        self.queue.drop_matching(lambda e: e.session_id == session_id)
+        proc = self._current_proc
+        if proc is not None and self._current_session_id == session_id:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
     async def _on_event(self, event: Event) -> None:
         if event.notification_type not in self.cfg.behavior.events:
@@ -98,6 +112,15 @@ class Daemon:
     async def _worker(self) -> None:
         while True:
             event = await self.queue.get()
+            sid = event.session_id
+            if sid and sid in self._cancelled_sessions:
+                # Stale cancel signal preceded the event; clear and play normally.
+                self._cancelled_sessions.discard(sid)
+
+            def _register(proc: asyncio.subprocess.Process) -> None:
+                self._current_proc = proc
+                self._current_session_id = sid
+
             try:
                 if event.text is not None:
                     # Caller pre-baked the phrase; skip the LLM entirely.
@@ -111,23 +134,32 @@ class Daemon:
                     )
                     text = await self.router.phrase(event, lang=lang)
                 self._last_text = text
-                if await self._try_stream(text, lang, event.voice_id):
+                if await self._try_stream(text, lang, event.voice_id, on_spawn=_register):
                     continue
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
                 await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
                 try:
-                    await play(out_path)
+                    await play(out_path, on_spawn=_register)
                 finally:
                     try:
                         out_path.unlink()
                     except OSError:
                         pass
             except Exception as exc:
-                logger.exception("worker failed: {}", exc)
+                if sid and sid in self._cancelled_sessions:
+                    logger.debug("playback cancelled for session {}", sid)
+                else:
+                    logger.exception("worker failed: {}", exc)
+            finally:
+                self._current_proc = None
+                self._current_session_id = None
+                if sid:
+                    self._cancelled_sessions.discard(sid)
 
     async def _try_stream(
-        self, text: str, lang, voice_id: str | None
+        self, text: str, lang, voice_id: str | None,
+        *, on_spawn=None,
     ) -> bool:
         """If the primary TTS supports streaming, pipe chunks straight to
         ffplay so playback begins before synthesis completes. Returns True
@@ -137,7 +169,10 @@ class Daemon:
         if not getattr(primary, "supports_streaming", False):
             return False
         try:
-            await play_stream(primary.stream(text, lang, voice_id=voice_id))
+            await play_stream(
+                primary.stream(text, lang, voice_id=voice_id),
+                on_spawn=on_spawn,
+            )
             return True
         except Exception as exc:
             logger.warning("Streaming TTS failed, falling back to synth: {}", exc)
@@ -147,7 +182,11 @@ class Daemon:
         await self.health.start()
         worker_task = asyncio.create_task(self._worker())
         try:
-            await serve_unix_socket(Path(self.cfg.paths.socket), self._on_event)
+            await serve_unix_socket(
+                Path(self.cfg.paths.socket),
+                self._on_event,
+                on_cancel=self.cancel_session,
+            )
         finally:
             worker_task.cancel()
             try:
