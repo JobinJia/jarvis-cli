@@ -4,6 +4,7 @@ from pathlib import Path
 from jarvis_cc.install import (
     PLIST_LABEL,
     merge_claude_settings,
+    remove_from_claude_settings,
     render_plist,
 )
 
@@ -44,6 +45,53 @@ def test_render_plist_contains_label_and_program(tmp_path: Path):
     assert "<key>KeepAlive</key>" in plist
     assert str(tmp_path) in plist
     assert "<key>PATH</key>" in plist
+
+
+def test_merge_settings_registers_userpromptsubmit_and_posttooluse():
+    out = merge_claude_settings({}, hook_command="jarvis-cc-hook")
+    for hook_type in ("UserPromptSubmit", "PostToolUse"):
+        entries = out["hooks"][hook_type]
+        assert len(entries) == 1
+        assert entries[0]["hooks"][0]["command"] == "jarvis-cc-hook"
+
+
+def test_merge_settings_idempotent_for_new_hooks():
+    out1 = merge_claude_settings({}, hook_command="jarvis-cc-hook")
+    out2 = merge_claude_settings(out1, hook_command="jarvis-cc-hook")
+    for hook_type in ("UserPromptSubmit", "PostToolUse"):
+        entries = out2["hooks"][hook_type]
+        count = sum(
+            1 for matcher in entries for h in matcher["hooks"]
+            if h["command"] == "jarvis-cc-hook"
+        )
+        assert count == 1
+
+
+def test_merge_settings_preserves_existing_userpromptsubmit_entries():
+    existing = {
+        "hooks": {
+            "UserPromptSubmit": [
+                {"matcher": "", "hooks": [{"type": "command", "command": "other-hook"}]}
+            ]
+        }
+    }
+    out = merge_claude_settings(existing, hook_command="jarvis-cc-hook")
+    cmds = [
+        h["command"]
+        for m in out["hooks"]["UserPromptSubmit"]
+        for h in m["hooks"]
+    ]
+    assert "other-hook" in cmds
+    assert "jarvis-cc-hook" in cmds
+
+
+def test_remove_strips_our_userpromptsubmit_and_posttooluse_entries():
+    existing = merge_claude_settings({}, hook_command="jarvis-cc-hook")
+    out = remove_from_claude_settings(existing, hook_command="jarvis-cc-hook")
+    for hook_type in ("UserPromptSubmit", "PostToolUse", "Notification"):
+        entries = out.get("hooks", {}).get(hook_type, [])
+        cmds = [h["command"] for m in entries for h in m["hooks"]]
+        assert "jarvis-cc-hook" not in cmds
 
 
 def test_render_plist_embeds_env_vars():

@@ -34,34 +34,47 @@ def _is_our_hook(hook: dict) -> bool:
     return Path(hook.get("command", "")).name == "jarvis-cc-hook"
 
 
+_OUR_HOOK_TYPES = ("Notification", "UserPromptSubmit", "PostToolUse")
+
+
 def merge_claude_settings(existing: dict, hook_command: str) -> dict:
-    """Install our Notification hook, replacing any prior jarvis-cc-hook entry."""
+    """Install our hook entries into Notification, UserPromptSubmit, and
+    PostToolUse, replacing any prior jarvis-cc-hook entries in those buckets.
+    """
     out = copy.deepcopy(existing)
     hooks = out.setdefault("hooks", {})
-    notification = hooks.setdefault("Notification", [])
-    pruned: list[dict] = []
-    for matcher in notification:
-        kept = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
-        if kept:
-            pruned.append({**matcher, "hooks": kept})
-    pruned.append(
-        {"matcher": "", "hooks": [{"type": "command", "command": hook_command}]}
-    )
-    out["hooks"]["Notification"] = pruned
+    for hook_type in _OUR_HOOK_TYPES:
+        entries = hooks.setdefault(hook_type, [])
+        pruned: list[dict] = []
+        for matcher in entries:
+            kept = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
+            if kept:
+                pruned.append({**matcher, "hooks": kept})
+        pruned.append(
+            {"matcher": "", "hooks": [{"type": "command", "command": hook_command}]}
+        )
+        out["hooks"][hook_type] = pruned
     return out
 
 
 def remove_from_claude_settings(existing: dict, hook_command: str) -> dict:
-    """Strip our jarvis-cc-hook entries. hook_command kept for signature compat."""
+    """Strip our jarvis-cc-hook entries from every hook bucket we install into.
+
+    `hook_command` is accepted for signature compat; matching is by basename.
+    """
     out = copy.deepcopy(existing)
-    notification = out.get("hooks", {}).get("Notification", [])
-    filtered = []
-    for matcher in notification:
-        hooks = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
-        if hooks:
-            filtered.append({**matcher, "hooks": hooks})
-    if "hooks" in out:
-        out["hooks"]["Notification"] = filtered
+    hooks = out.get("hooks", {})
+    for hook_type in _OUR_HOOK_TYPES:
+        entries = hooks.get(hook_type, [])
+        filtered = []
+        for matcher in entries:
+            kept = [h for h in matcher.get("hooks", []) if not _is_our_hook(h)]
+            if kept:
+                filtered.append({**matcher, "hooks": kept})
+        if filtered:
+            hooks[hook_type] = filtered
+        else:
+            hooks.pop(hook_type, None)
     return out
 
 
