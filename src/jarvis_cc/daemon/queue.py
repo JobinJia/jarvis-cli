@@ -42,3 +42,15 @@ class BoundedEventQueue:
             while not self._deque:
                 await self._cond.wait()
             return self._deque.popleft()
+
+    def drop_matching(self, predicate) -> int:
+        """Remove every queued event for which predicate(event) is True.
+
+        Synchronous because callers (the cancel path) run on the same asyncio
+        loop as put/get. Returns count removed.
+        """
+        before = len(self._deque)
+        kept = [e for e in self._deque if not predicate(e)]
+        self._deque.clear()
+        self._deque.extend(kept)
+        return before - len(self._deque)

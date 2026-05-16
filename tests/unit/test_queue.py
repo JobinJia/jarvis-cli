@@ -32,3 +32,24 @@ async def test_queue_drops_oldest_when_full():
     assert a.tool_name == "T3"
     assert b.tool_name == "T4"
     assert q.dropped_count == 3
+
+
+@pytest.mark.asyncio
+async def test_queue_drop_matching_removes_only_matches():
+    q = BoundedEventQueue(maxsize=10)
+    for i in range(5):
+        await q.put_or_drop(_ev(i))
+    removed = q.drop_matching(lambda e: e.tool_name in {"T1", "T3"})
+    assert removed == 2
+    survivors = []
+    while q.size:
+        survivors.append((await q.get()).tool_name)
+    assert survivors == ["T0", "T2", "T4"]
+
+
+@pytest.mark.asyncio
+async def test_queue_drop_matching_returns_zero_when_no_match():
+    q = BoundedEventQueue(maxsize=10)
+    await q.put_or_drop(_ev(0))
+    assert q.drop_matching(lambda e: e.tool_name == "nope") == 0
+    assert q.size == 1
