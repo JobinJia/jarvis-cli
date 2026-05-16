@@ -105,7 +105,13 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
         phrase router calls Ollama/DeepSeek to translate-and-rephrase into a
         Jarvis-toned line in the user's chosen output language.
     """
-    if payload.get("hook_event_name") == "PreToolUse" and \
+    hook_event = payload.get("hook_event_name")
+    if hook_event in ("UserPromptSubmit", "PostToolUse"):
+        sid = payload.get("session_id")
+        if not sid:
+            return None
+        return {"command": "cancel", "session_id": sid}
+    if hook_event == "PreToolUse" and \
             payload.get("tool_name") == "AskUserQuestion":
         ti = payload.get("tool_input") or {}
         questions = ti.get("questions")
@@ -137,12 +143,17 @@ def forward_event(
     sock_path: str | Path,
     *,
     lang_mode: str = "en",
+    cancel_on_user_action: bool = True,
 ) -> bool:
     """Forward an NDJSON event from `stream` to the unix socket at `sock_path`.
 
     `lang_mode` ("en" | "zh" | "auto") only affects AskUserQuestion translation.
+    `cancel_on_user_action`: when False, UserPromptSubmit / PostToolUse hook
+    payloads are dropped without contacting the daemon.
+
     Returns True if successfully sent. Returns False on any failure
-    (invalid JSON, socket missing, write error) — never raises.
+    (invalid JSON, socket missing, write error, dropped by policy) —
+    never raises.
     """
     sock_path = Path(sock_path)
     try:
@@ -152,6 +163,12 @@ def forward_event(
         return False
 
     if not isinstance(payload, dict):
+        return False
+
+    if (
+        not cancel_on_user_action
+        and payload.get("hook_event_name") in ("UserPromptSubmit", "PostToolUse")
+    ):
         return False
 
     payload = _translate_cc_payload(payload, lang_mode=lang_mode)
@@ -186,7 +203,13 @@ def main() -> int:
     try:
         cfg = load_config(DEFAULT_CONFIG_PATH)
         mode = getattr(cfg.behavior, "voice_language", "en") or "en"
-        forward_event(sys.stdin, cfg.paths.socket, lang_mode=mode)
+        cancel = getattr(cfg.behavior, "cancel_on_user_action", True)
+        forward_event(
+            sys.stdin,
+            cfg.paths.socket,
+            lang_mode=mode,
+            cancel_on_user_action=cancel,
+        )
     except Exception:  # noqa: BLE001 — structural guarantee
         pass
     return 0

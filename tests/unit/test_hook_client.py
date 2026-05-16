@@ -80,6 +80,61 @@ def _recv_one(received: list[bytes]) -> dict:
     return json.loads(received[0].decode().strip())
 
 
+def test_forward_event_userpromptsubmit_sends_cancel(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "abc-123",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is True
+    row = _recv_one(received)
+    assert row["command"] == "cancel"
+    assert row["session_id"] == "abc-123"
+
+
+def test_forward_event_posttooluse_sends_cancel(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "session_id": "sess-9",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is True
+    row = _recv_one(received)
+    assert row["command"] == "cancel"
+    assert row["session_id"] == "sess-9"
+
+
+def test_forward_event_userpromptsubmit_without_session_id_is_dropped(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    payload = {"hook_event_name": "UserPromptSubmit", "cwd": "/x"}
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is False
+
+
+def test_forward_event_cancel_disabled_by_flag(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "session_id": "abc",
+    }
+    ok = forward_event(
+        io.StringIO(json.dumps(payload)),
+        sock_path,
+        cancel_on_user_action=False,
+    )
+    assert ok is False
+
+
 def test_forward_event_en_mode_forwards_raw_for_llm_translation(tmp_path: Path):
     """Default `en` mode does NOT pre-bake text; it forwards the question
     payload so the daemon's phrase router calls the LLM to translate/rephrase
