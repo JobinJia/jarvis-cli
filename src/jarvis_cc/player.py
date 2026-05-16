@@ -3,26 +3,39 @@
 `play(path)`            — afplay; reads a finished audio file from disk.
 `play_stream(chunks)`   — ffplay; reads MP3 chunks from stdin so playback
                           starts before synthesis completes.
+
+Both accept an optional `on_spawn(proc)` callback so callers (the daemon
+worker) can capture the subprocess handle for external cancellation.
 """
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 
-async def play(audio: Path) -> None:
+async def play(
+    audio: Path,
+    *,
+    on_spawn: Callable[[asyncio.subprocess.Process], None] | None = None,
+) -> None:
     proc = await asyncio.create_subprocess_exec(
         "afplay", str(audio),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    if on_spawn is not None:
+        on_spawn(proc)
     _, err = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(f"afplay failed: {err.decode(errors='replace')}")
 
 
-async def play_stream(chunks: AsyncIterator[bytes]) -> None:
+async def play_stream(
+    chunks: AsyncIterator[bytes],
+    *,
+    on_spawn: Callable[[asyncio.subprocess.Process], None] | None = None,
+) -> None:
     """Spawn ffplay reading MP3 from stdin and feed it chunks as they arrive.
 
     ffplay buffers internally and starts playback once it has enough audio
@@ -40,6 +53,8 @@ async def play_stream(chunks: AsyncIterator[bytes]) -> None:
         stderr=asyncio.subprocess.PIPE,
     )
     assert proc.stdin is not None  # PIPE was requested above
+    if on_spawn is not None:
+        on_spawn(proc)
     try:
         async for chunk in chunks:
             if not chunk:
