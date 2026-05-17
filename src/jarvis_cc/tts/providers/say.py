@@ -12,6 +12,13 @@ _VOICE_BY_LANG = {
     "zh": "Tingting",  # Mandarin female
 }
 
+# `say` picks the container from the file extension. .aiff is its native
+# format and works with no flags. .wav needs an explicit data format —
+# without it, say errors out with "Opening output file failed: fmt?".
+_DATA_FORMAT_BY_SUFFIX = {
+    ".wav": "LEF32@22050",  # 32-bit little-endian float PCM, 22.05kHz
+}
+
 
 class SayProvider(TTSProvider):
     name = "say"
@@ -27,9 +34,13 @@ class SayProvider(TTSProvider):
         # "Tingting", "Karen"); fall back to a language-appropriate default.
         voice = voice_id or _VOICE_BY_LANG.get(lang, "Daniel")
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # `say` outputs AIFF, but afplay handles both .aiff and .wav.
+        argv: list[str] = ["say", "-v", voice, "-o", str(out_path)]
+        data_format = _DATA_FORMAT_BY_SUFFIX.get(out_path.suffix.lower())
+        if data_format is not None:
+            argv.append(f"--data-format={data_format}")
+        argv.append(text)
         proc = await asyncio.create_subprocess_exec(
-            "say", "-v", voice, "-o", str(out_path), text,
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
