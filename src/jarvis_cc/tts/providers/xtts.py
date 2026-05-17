@@ -65,6 +65,8 @@ class XTTSProvider(TTSProvider):
                 speaker_wav=str(ref),
                 language=_LANG_CODE.get(lang, "en"),
                 file_path=str(out_path),
+                temperature=self.cfg.temperature,
+                speed=self.cfg.speed,
             )
 
         await asyncio.to_thread(_run)

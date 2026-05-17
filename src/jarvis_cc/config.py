@@ -52,6 +52,16 @@ class XTTSConfig:
     ref_audio_zh: str = "~/.jarvis-cc/voices/jarvis_zh.wav"
     ref_audio_en: str = "~/.jarvis-cc/voices/jarvis_en.wav"
     device: str = "mps"
+    # XTTS GPT decoder sampling temperature. Library default 0.75 is too
+    # high for our use case — short Jarvis-toned commands suffer audible
+    # word repetition / pacing drift across takes. 0.5 cuts variance to
+    # the point where successive synths of the same line are consistent.
+    temperature: float = 0.5
+    # Playback speed multiplier applied during synthesis. The clone of
+    # Paul Bettany's Iron Man delivery runs slower than feels right for
+    # short status lines, so we nudge 1.0 → 1.15 to land between cinematic
+    # and snappy.
+    speed: float = 1.15
 
 
 @dataclass

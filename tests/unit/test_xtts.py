@@ -33,6 +33,12 @@ async def test_xtts_calls_underlying_engine(tmp_path: Path):
     assert kwargs["language"] == "zh-cn"
     assert kwargs["speaker_wav"] == str(ref)
     assert kwargs["file_path"] == str(out)
+    # Temperature must be forwarded from config to inference — XTTS's
+    # library default 0.75 produces noticeably more pacing/intonation
+    # variance than we want.
+    assert kwargs["temperature"] == pytest.approx(0.5)
+    # Speed is nudged above 1.0 so short status lines don't drag.
+    assert kwargs["speed"] == pytest.approx(1.15)
 
 
 @pytest.mark.asyncio
