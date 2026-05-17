@@ -1,6 +1,7 @@
 """ElevenLabs cloud TTS provider."""
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -10,6 +11,24 @@ import httpx
 from ...config import ElevenLabsConfig
 from ...types import Lang
 from .base import TTSProvider
+
+
+def _quota_exhausted_message(body: bytes) -> str | None:
+    """If `body` is an ElevenLabs quota_exceeded JSON error, return a single-
+    line human message; otherwise None. ElevenLabs wraps quota errors in
+    HTTP 401, which is indistinguishable from auth failures at the status
+    layer — only the body distinguishes them.
+    """
+    try:
+        detail = json.loads(body).get("detail")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(detail, dict):
+        return None
+    if detail.get("code") != "quota_exceeded" and detail.get("status") != "quota_exceeded":
+        return None
+    msg = detail.get("message") or "quota exceeded"
+    return f"ElevenLabs quota exhausted: {msg}"
 
 
 class ElevenLabsProvider(TTSProvider):
@@ -56,6 +75,10 @@ class ElevenLabsProvider(TTSProvider):
                 },
                 json=self._body(text),
             )
+            if r.status_code == 401:
+                quota = _quota_exhausted_message(r.content)
+                if quota is not None:
+                    raise RuntimeError(quota)
             r.raise_for_status()
             out_path.write_bytes(r.content)
         return out_path
@@ -80,6 +103,11 @@ class ElevenLabsProvider(TTSProvider):
                 },
                 json=self._body(text),
             ) as response:
+                if response.status_code == 401:
+                    body = await response.aread()
+                    quota = _quota_exhausted_message(body)
+                    if quota is not None:
+                        raise RuntimeError(quota)
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes():
                     if chunk:
