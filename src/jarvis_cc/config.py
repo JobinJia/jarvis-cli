@@ -76,11 +76,34 @@ class ElevenLabsConfig:
 
 
 @dataclass
+class CosyVoiceConfig:
+    """CosyVoice 3 (FunAudioLLM) via the Apache-2.0 Rust+Candle binding
+    `cosyvoice3.rs`. Apple Silicon Metal acceleration; no PyTorch needed.
+
+    Quality outperforms XTTS-v2 on speaker similarity in our A/B; the
+    permissive license also clears the OSS path that XTTS's CPML blocks.
+    """
+    model_dir: str = "~/.jarvis-cc/models/cosyvoice3-0.5b-candle"
+    ref_audio_zh: str = "~/.jarvis-cc/voices/jarvis_zh.wav"
+    ref_audio_en: str = "~/.jarvis-cc/voices/jarvis_en.wav"
+    # Transcript of each ref audio. When provided, the provider routes
+    # through inference_zero_shot (which uses the transcript to ground the
+    # LLM and prevent the double-take loop that cross_lingual mode falls
+    # into on short utterances). Leave blank to use cross_lingual instead.
+    ref_text_zh: str = ""
+    ref_text_en: str = ""
+    # CFM sampling steps for the flow decoder. Higher = better fidelity at
+    # linear cost. 10 is the library default and good for our short lines.
+    n_timesteps: int = 10
+
+
+@dataclass
 class TTSConfig:
     provider: str = "xtts"
     fallback: str = "say"
     xtts: XTTSConfig = field(default_factory=XTTSConfig)
     elevenlabs: ElevenLabsConfig = field(default_factory=ElevenLabsConfig)
+    cosyvoice: CosyVoiceConfig = field(default_factory=CosyVoiceConfig)
 
 
 @dataclass
@@ -165,6 +188,9 @@ def load_config(path: str | Path) -> Config:
     cfg.tts.xtts.model_dir = expanduser(cfg.tts.xtts.model_dir)
     cfg.tts.xtts.ref_audio_zh = expanduser(cfg.tts.xtts.ref_audio_zh)
     cfg.tts.xtts.ref_audio_en = expanduser(cfg.tts.xtts.ref_audio_en)
+    cfg.tts.cosyvoice.model_dir = expanduser(cfg.tts.cosyvoice.model_dir)
+    cfg.tts.cosyvoice.ref_audio_zh = expanduser(cfg.tts.cosyvoice.ref_audio_zh)
+    cfg.tts.cosyvoice.ref_audio_en = expanduser(cfg.tts.cosyvoice.ref_audio_en)
     return cfg
 
 

@@ -21,6 +21,7 @@ from ..phrase.router import PhraseRouter
 from ..player import play, play_stream
 from ..tts.engine import TTSEngine
 from ..tts.providers.base import TTSProvider
+from ..tts.providers.cosyvoice import CosyVoiceProvider
 from ..tts.providers.elevenlabs import ElevenLabsProvider
 from ..tts.providers.say import SayProvider
 from ..tts.providers.xtts import XTTSProvider
@@ -49,6 +50,7 @@ def _make_phrase_provider(name: str, cfg: Config) -> PhraseProvider | None:
 def _make_tts_provider(name: str, cfg: Config) -> TTSProvider | None:
     factories = {
         "xtts": lambda: XTTSProvider(cfg.tts.xtts),
+        "cosyvoice": lambda: CosyVoiceProvider(cfg.tts.cosyvoice),
         "elevenlabs": lambda: ElevenLabsProvider(cfg.tts.elevenlabs),
         "say": lambda: SayProvider(),
     }
