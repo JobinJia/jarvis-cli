@@ -9,7 +9,20 @@ dependencies = [
     "httpx>=0.27",
     "loguru>=0.7",
     "langdetect>=1.0.9",
-    "coqui-tts>=0.24",
+    "coqui-tts[codec]>=0.24",
+]
+
+[project.optional-dependencies]
+# XTTS-v2 needs the PyTorch runtime. Kept optional so users on the
+# ElevenLabs / `say` paths don't pull ~300MB they won't load.
+#
+# transformers is pinned <5 because coqui-tts 0.27.x still imports
+# `isin_mps_friendly` from `transformers.pytorch_utils`, which was
+# removed in transformers 5.0. Upstream coqui-tts has not adapted yet.
+xtts = [
+    "torch>=2.2",
+    "torchaudio>=2.2",
+    "transformers>=4.57,<5",
 ]
 
 [project.scripts]
