@@ -58,6 +58,12 @@ class XTTSProvider(TTSProvider):
             raise FileNotFoundError(f"reference audio missing: {ref}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        speed = (
+            self.cfg.speed_short
+            if len(text) < self.cfg.short_threshold_chars
+            else self.cfg.speed_long
+        )
+
         def _run() -> None:
             model = self._load_model()
             model.tts_to_file(
@@ -66,7 +72,7 @@ class XTTSProvider(TTSProvider):
                 language=_LANG_CODE.get(lang, "en"),
                 file_path=str(out_path),
                 temperature=self.cfg.temperature,
-                speed=self.cfg.speed,
+                speed=speed,
             )
 
         await asyncio.to_thread(_run)

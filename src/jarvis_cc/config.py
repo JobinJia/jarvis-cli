@@ -57,11 +57,15 @@ class XTTSConfig:
     # word repetition / pacing drift across takes. 0.5 cuts variance to
     # the point where successive synths of the same line are consistent.
     temperature: float = 0.5
-    # Playback speed multiplier applied during synthesis. The clone of
-    # Paul Bettany's Iron Man delivery runs slower than feels right for
-    # short status lines, so we nudge 1.0 → 1.15 to land between cinematic
-    # and snappy.
-    speed: float = 1.15
+    # XTTS's GPT learned an asymmetry from training data: short utterances
+    # are delivered slowly (with pauses for emphasis), long utterances flow
+    # quickly. A single `speed` multiplier therefore over-speeds long text
+    # while still feeling sluggish on short status lines. We split the knob:
+    # texts under `short_threshold_chars` get `speed_short` (faster),
+    # longer ones get `speed_long` (closer to 1.0).
+    speed_short: float = 1.30
+    speed_long: float = 1.00
+    short_threshold_chars: int = 60
 
 
 @dataclass

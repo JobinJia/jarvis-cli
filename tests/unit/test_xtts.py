@@ -37,8 +37,35 @@ async def test_xtts_calls_underlying_engine(tmp_path: Path):
     # library default 0.75 produces noticeably more pacing/intonation
     # variance than we want.
     assert kwargs["temperature"] == pytest.approx(0.5)
-    # Speed is nudged above 1.0 so short status lines don't drag.
-    assert kwargs["speed"] == pytest.approx(1.15)
+    # "hello" is 5 chars → falls into the short bucket, so speed_short
+    # (1.30) is what reaches the engine, not speed_long.
+    assert kwargs["speed"] == pytest.approx(1.30)
+
+
+@pytest.mark.asyncio
+async def test_xtts_picks_speed_long_for_long_text(tmp_path: Path):
+    """Long text gets a different (lower) speed multiplier because XTTS's
+    GPT already speeds long utterances up on its own — applying speed_short
+    to them turns long readouts into auctioneer-pace.
+    """
+    ref = tmp_path / "ref_en.wav"
+    ref.write_bytes(b"\x00" * 1024)
+    cfg = XTTSConfig(
+        model_dir=str(tmp_path / "model"),
+        ref_audio_zh=str(ref), ref_audio_en=str(ref),
+        device="cpu",
+    )
+    long_text = "Sir, " + "this is a deliberately long status update. " * 5
+    assert len(long_text) >= cfg.short_threshold_chars
+
+    p = XTTSProvider(cfg)
+    fake_tts = MagicMock()
+    fake_tts.tts_to_file = MagicMock(return_value=None)
+    with patch.object(p, "_load_model", return_value=fake_tts):
+        await p.synthesize(long_text, lang="en", out_path=tmp_path / "o.wav")
+
+    kwargs = fake_tts.tts_to_file.call_args.kwargs
+    assert kwargs["speed"] == pytest.approx(cfg.speed_long)
 
 
 @pytest.mark.asyncio
