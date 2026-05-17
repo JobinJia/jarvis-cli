@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -68,6 +69,7 @@ class Daemon:
             primary=_make_phrase_provider(cfg.llm.provider, cfg),
             fallback=_make_phrase_provider(cfg.llm.fallback, cfg),
             cfg=cfg,
+            on_primary_fallback=self._announce_phrase_fallback,
         )
         primary_tts = _make_tts_provider(cfg.tts.provider, cfg) or SayProvider()
         fallback_tts = _make_tts_provider(cfg.tts.fallback, cfg)
@@ -81,6 +83,12 @@ class Daemon:
         self._current_proc: asyncio.subprocess.Process | None = None
         self._current_session_id: str | None = None
         self._cancelled_sessions: set[str] = set()
+        # Throttle Jarvis's voice alert when the local phrase provider
+        # quietly slips onto the cloud fallback. 5 min between announcements
+        # is enough for the user to notice without spamming during an
+        # extended ollama outage.
+        self._last_phrase_fallback_alert_at: float = 0.0
+        self._phrase_fallback_alert_throttle_s: float = 300.0
 
     def _snapshot(self) -> dict:
         return {
@@ -89,6 +97,29 @@ class Daemon:
             "dropped": self.queue.dropped_count,
             "last_text": self._last_text,
         }
+
+    async def _announce_phrase_fallback(self, primary_name: str) -> None:
+        """Wired into PhraseRouter; fires when the primary LLM (typically
+        local ollama) fails and the cloud fallback takes over. Throttle to
+        one alert per `_phrase_fallback_alert_throttle_s`, then enqueue a
+        pre-baked Jarvis line so the user audibly notices."""
+        now = time.monotonic()
+        if now - self._last_phrase_fallback_alert_at < self._phrase_fallback_alert_throttle_s:
+            return
+        self._last_phrase_fallback_alert_at = now
+        text = (
+            f"Sir, the local language model {primary_name} appears unreachable. "
+            "I am falling back to the cloud."
+        )
+        logger.warning(
+            "Phrase primary ({}) unreachable — alerting via voice", primary_name,
+        )
+        alert = Event(
+            notification_type="idle_prompt",
+            tool_name=None, tool_input={},
+            text=text, lang="en",
+        )
+        await self.queue.put_or_drop(alert)
 
     async def cancel_session(self, session_id: str) -> None:
         """Cancel any in-flight audio for `session_id` and drop its queued events."""

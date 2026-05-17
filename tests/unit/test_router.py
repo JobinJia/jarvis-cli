@@ -61,3 +61,60 @@ async def test_router_template_when_no_fallback():
     router = PhraseRouter(primary, None, Config())
     out = await router.phrase(_ev(), lang="en")
     assert "Sir" in out
+
+
+@pytest.mark.asyncio
+async def test_router_invokes_callback_when_primary_falls_back():
+    """When the primary phrase provider fails (ollama down) and the
+    fallback (deepseek) succeeds, the router must surface that transition
+    so callers can notify the user — otherwise local-first deployments
+    silently start burning cloud credits."""
+    primary, fallback = _Stub("p", "fail"), _Stub("f", "ok")
+    fired: list[str] = []
+
+    async def on_fallback(primary_name: str) -> None:
+        fired.append(primary_name)
+
+    router = PhraseRouter(
+        primary, fallback, Config(),
+        on_primary_fallback=on_fallback,
+    )
+    out = await router.phrase(_ev(), lang="en")
+    assert out == "<f>"
+    assert fired == ["p"], f"expected one callback with primary name, got {fired!r}"
+
+
+@pytest.mark.asyncio
+async def test_router_does_not_invoke_callback_when_primary_healthy():
+    """Healthy primary path must NOT trigger the fallback notification."""
+    primary, fallback = _Stub("p", "ok"), _Stub("f", "ok")
+    fired: list[str] = []
+
+    async def on_fallback(primary_name: str) -> None:
+        fired.append(primary_name)
+
+    router = PhraseRouter(
+        primary, fallback, Config(),
+        on_primary_fallback=on_fallback,
+    )
+    await router.phrase(_ev(), lang="en")
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_router_does_not_invoke_callback_when_both_fail():
+    """If both fail and we end up at the template, there's nothing useful
+    to alert about — we already produced a degraded result; spamming a
+    voice alert would just stack on top of the template output."""
+    primary, fallback = _Stub("p", "fail"), _Stub("f", "fail")
+    fired: list[str] = []
+
+    async def on_fallback(primary_name: str) -> None:
+        fired.append(primary_name)
+
+    router = PhraseRouter(
+        primary, fallback, Config(),
+        on_primary_fallback=on_fallback,
+    )
+    await router.phrase(_ev(), lang="en")
+    assert fired == []
