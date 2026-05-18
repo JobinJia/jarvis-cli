@@ -92,9 +92,11 @@ class CosyVoiceConfig:
     # into on short utterances). Leave blank to use cross_lingual instead.
     ref_text_zh: str = ""
     ref_text_en: str = ""
-    # CFM sampling steps for the flow decoder. Higher = better fidelity at
-    # linear cost. 10 is the library default and good for our short lines.
-    n_timesteps: int = 10
+    # CFM sampling steps for the flow decoder. Library default is 10;
+    # we drop to 5 because the flow-decoder cost scales linearly with
+    # steps and the quality delta on Bettany short lines is sub-perceptible
+    # in A/B testing. Bump back to 10 if you ever hear artifacts.
+    n_timesteps: int = 5
 
 
 @dataclass
