@@ -2,7 +2,7 @@
 
 A Jarvis-voiced notification layer for [Claude Code](https://claude.com/claude-code).
 
-When Claude Code needs your attention — permission prompts, idle waits, MCP elicitation dialogs — a daemon speaks one short, British-butler-toned sentence so you don't miss the moment while pouring coffee or stepping away from the screen.
+When Claude Code needs your attention — permission prompts, idle waits, MCP elicitation dialogs, AskUserQuestion options — a daemon speaks one short, British-butler-toned sentence so you don't miss the moment while pouring coffee or stepping away from the screen.
 
 ```
 [ Claude Code asks: Allow `rm -rf /` ? ]
@@ -11,24 +11,26 @@ When Claude Code needs your attention — permission prompts, idle waits, MCP el
    "Sir, that command appears rather drastic."
 ```
 
+The default stack is **fully local, zero-cost**: Ollama for phrasing, CosyVoice 3 for the voice. Cloud providers (DeepSeek, ElevenLabs) are kept as opt-in fallbacks.
+
 ## How it works
 
 ```
-Claude Code ──Notification hook──► jarvis-cc-hook (one-shot, <10ms)
+Claude Code ──Notification / PreToolUse hooks──► jarvis-cc-hook (one-shot, <10ms)
             └ UserPromptSubmit / PostToolUse hooks ─► cancel signal
-                                          │
-                                          ▼ Unix socket
-                              jarvis-cc-daemon (launchd, KeepAlive)
-                                          │
-                          ┌───────────────┴───────────────┐
-                          ▼                               ▼
-                   phrase router                     TTS engine
-              (LLM picks Jarvis line)          (synthesises audio)
-                          │                               │
-              Ollama → DeepSeek → ...        ElevenLabs → XTTS → say
-                                                          │
-                                                          ▼
-                                                       afplay
+                                                │
+                                                ▼ Unix socket
+                                    jarvis-cc-daemon (launchd, KeepAlive)
+                                                │
+                          ┌─────────────────────┴─────────────────────┐
+                          ▼                                           ▼
+                   phrase router                                 TTS engine
+              (LLM picks Jarvis line)                       (synthesises audio)
+                          │                                           │
+                Ollama → DeepSeek                       CosyVoice 3 → XTTS → say
+                                                                      │
+                                                                      ▼
+                                                                   ffplay / afplay
 ```
 
 - Hook is fire-and-forget (returns under 10ms; never blocks CC).
@@ -36,40 +38,47 @@ Claude Code ──Notification hook──► jarvis-cc-hook (one-shot, <10ms)
 - 10-second sliding-window dedup keyed by `(cwd, type, tool)`.
 - Bounded queue (drops oldest when >5 events backlogged).
 - English / Chinese auto-detect from `CLAUDE.md` / `AGENTS.md` / `README.md` in the event's `cwd`.
+- When the local LLM (Ollama) slips onto the cloud fallback, Jarvis announces it audibly so you notice before you start burning credits.
 
 ## Requirements
 
 - macOS 13+, Apple Silicon (M1/M2/M3/M4). Not tested on Intel.
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 - Claude Code installed and authenticated.
-- At least one LLM source:
+- At least one **LLM** source:
   - **Ollama** (recommended, local & free) running `qwen3:8b` or similar, OR
   - **DeepSeek** API key (cloud, very cheap), OR
   - Anthropic / OpenAI API key.
-- At least one TTS source:
-  - **ElevenLabs** API key with `text_to_speech` scope (recommended; free tier covers ~10k chars/month), OR
-  - macOS built-in `say` (zero setup, robotic), OR
-  - XTTS-v2 zero-shot voice cloning (heaviest, needs a 10-30s reference audio file).
+- At least one **TTS** source:
+  - **CosyVoice 3** — Apache-2.0, local voice clone, Apple Silicon Metal (`--extra cosyvoice`, recommended default), OR
+  - **XTTS-v2** — voice clone, Apple Silicon MPS via PyTorch (`--extra xtts`; weights under CPML / non-commercial), OR
+  - **ElevenLabs** API key with `text_to_speech` scope (cloud), OR
+  - macOS built-in `say` (zero setup, robotic — also the universal fallback).
 
 ## Install
 
 ```bash
 git clone https://github.com/JobinJia/jarvis-cc.git
 cd jarvis-cc
-uv sync
+
+# Pick the TTS path you want; extras are additive.
+uv sync --extra cosyvoice          # recommended
+# uv sync --extra xtts             # legacy path (CPML non-commercial)
+# uv sync --extra cosyvoice --extra xtts   # keep both available
 ```
 
-Export at least one LLM key and one TTS key into your shell rc **before** running install — they get baked into the launchd plist so the background daemon can see them:
+Export at least one LLM key into your shell rc **before** running install — it gets baked into the launchd plist so the background daemon can see it:
 
 ```bash
-# pick what you have:
-echo 'export DEEPSEEK_API_KEY=sk-...'       >> ~/.zshrc
-echo 'export ELEVENLABS_API_KEY=sk_...'     >> ~/.zshrc
+echo 'export DEEPSEEK_API_KEY=sk-...'       >> ~/.zshrc   # optional, only if you keep deepseek as fallback
 # (optional)
+echo 'export ELEVENLABS_API_KEY=sk_...'     >> ~/.zshrc
 echo 'export ANTHROPIC_API_KEY=sk-ant-...'  >> ~/.zshrc
 echo 'export OPENAI_API_KEY=sk-...'         >> ~/.zshrc
 source ~/.zshrc
 ```
+
+If you're going **fully local** (Ollama + CosyVoice + `say` fallback), no API keys are needed at all.
 
 Then:
 
@@ -81,9 +90,34 @@ This will:
 
 1. Create `~/.jarvis-cc/{voices,models,logs}/`.
 2. Write a default `~/.jarvis-cc/config.toml` if absent.
-3. Patch `~/.claude/settings.json` to register a `Notification` hook pointing at the absolute path of `jarvis-cc-hook` in the project venv.
-4. Write `~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` with your API keys embedded.
+3. Patch `~/.claude/settings.json` to register `Notification`, `PreToolUse`, `UserPromptSubmit`, and `PostToolUse` hooks pointing at the absolute path of `jarvis-cc-hook` in the project venv.
+4. Write `~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` with your API keys embedded. CosyVoice users need `COQUI_TOS_AGREED=1` only if they also enabled the XTTS path (XTTS uses Coqui-TTS internally).
 5. `launchctl load` the plist — daemon starts immediately and on every login.
+
+### TTS model setup
+
+**CosyVoice 3** (Apache-2.0, recommended):
+
+```bash
+# Download Candle-format weights (~4.7GB on disk)
+uv run hf download spensercai/CosyVoice3-0.5B-Candle \
+  --local-dir ~/.jarvis-cc/models/cosyvoice3-0.5b-candle
+
+# Provide an English reference clip — 10-30s of clean speech of the voice
+# you want cloned (e.g. trimmed from a podcast or interview).
+# Save to ~/.jarvis-cc/voices/jarvis_en.wav (mono WAV, ~22050Hz preferred).
+```
+
+Add the transcript of that reference clip to `[tts.cosyvoice] ref_text_en` in
+`config.toml` — without it, CosyVoice falls back to `inference_cross_lingual`,
+which audibly doubles short utterances.
+
+**XTTS-v2** (legacy, CPML non-commercial):
+
+```bash
+# Weights auto-download from HuggingFace on the first synthesis call (~2GB).
+# Same reference-audio expectation as above.
+```
 
 Now **restart any running Claude Code sessions** so they pick up the patched `settings.json`.
 
@@ -107,7 +141,8 @@ Fire a synthetic event and listen:
 
 ```bash
 uv run jarvis-cc test --event permission_prompt --tool Bash
-# you should hear a sentence within ~1-3 seconds
+# you should hear a sentence within ~5-15 seconds the first time
+# (model load), and ~3-5s on every call after that
 ```
 
 Trigger the real hook end-to-end:
@@ -116,8 +151,7 @@ Trigger the real hook end-to-end:
 # in any project, open Claude Code and ask it to do
 # something that isn't on your auto-allow list, e.g.:
 #   "please run sudo ls /root"
-# when the approval dialog appears in CC,
-# you should hear Jarvis within 1-3 seconds.
+# when the approval dialog appears in CC, you should hear Jarvis.
 ```
 
 ## Configuration
@@ -126,8 +160,8 @@ Everything lives in `~/.jarvis-cc/config.toml`. The defaults you get after `inst
 
 ```toml
 [llm]
-provider = "deepseek"          # primary
-fallback = "ollama"            # used if primary times out / errors
+provider = "ollama"            # local, zero-cost; deepseek kept as fallback
+fallback = "deepseek"
 
 [llm.deepseek]
 api_key_env = "DEEPSEEK_API_KEY"
@@ -135,31 +169,42 @@ model = "deepseek-chat"
 
 [llm.ollama]
 base_url = "http://localhost:11434"
-model = "qwen2.5:7b"
-timeout_seconds = 10
+model = "qwen3:8b"
+timeout_seconds = 30
 
 [tts]
-provider = "xtts"              # primary
-fallback = "say"               # used if primary fails
+provider = "cosyvoice"         # Apache-2.0 local voice clone
+fallback = "say"               # macOS built-in, universal safety net
 
-[tts.elevenlabs]
-api_key_env = "ELEVENLABS_API_KEY"
-voice_id = ""                  # set this!
-model = "eleven_turbo_v2_5"
+[tts.cosyvoice]
+model_dir   = "~/.jarvis-cc/models/cosyvoice3-0.5b-candle"
+ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
+ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+ref_text_en = ""               # transcript of ref_audio_en — strongly recommended
+n_timesteps = 10               # CFM sampling steps (10 = library default)
 
-[tts.xtts]
+[tts.xtts]                     # used only if [tts] provider = "xtts"
 model_dir   = "~/.jarvis-cc/models/xtts-v2"
 ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
 ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
 device = "mps"                 # mps | cpu
+temperature = 0.5              # < 0.75 default → stable pacing across takes
+speed_short = 1.30             # < 60 chars: nudge faster (XTTS slows short lines)
+speed_long  = 1.00             # ≥ 60 chars: leave alone (XTTS already flows fast)
+short_threshold_chars = 60
+
+[tts.elevenlabs]
+api_key_env = "ELEVENLABS_API_KEY"
+voice_id = ""                  # set this if you use ElevenLabs!
+model = "eleven_turbo_v2_5"
 
 [behavior]
 dedup_window_seconds = 10
 queue_max_size = 5
-voice_language = "auto"        # auto | zh | en
-events = ["permission_prompt", "idle_prompt", "elicitation_dialog"]
-phrase_target_chars = 70       # LLM aims for this length
-phrase_hard_cap = 120          # LLM is told not to exceed this; no post-truncation
+voice_language = "en"          # en | zh | auto
+events = ["permission_prompt", "idle_prompt", "elicitation_dialog", "ask_user_question"]
+phrase_target_chars = 70
+phrase_hard_cap = 120
 cancel_on_user_action = true   # stop playback when you respond in the originating CC session
 
 [behavior.privacy]
@@ -173,30 +218,38 @@ launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
 launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
 ```
 
-### Recommended profile (no recording, no GPU, free-ish)
+### Recommended profile (zero-cost, OSS-friendly)
+
+This is the default. Local Ollama for phrasing, local CosyVoice 3 for voice — both Apache-2.0, no API calls in steady state.
 
 ```toml
 [llm]
-provider = "ollama"            # local, free
-fallback = "deepseek"          # cheap cloud backup
+provider = "ollama"
+fallback = "deepseek"          # only fires if Ollama is unreachable; Jarvis announces it
 
-[llm.ollama]
-model = "qwen3:8b"
-timeout_seconds = 30
+[tts]
+provider = "cosyvoice"
+fallback = "say"
+```
+
+### Cloud-cheap profile
+
+```toml
+[llm]
+provider = "deepseek"          # cheap and fast TTFT
+fallback = "ollama"
 
 [tts]
 provider = "elevenlabs"
 fallback = "say"
 
 [tts.elevenlabs]
-api_key_env = "ELEVENLABS_API_KEY"
-voice_id = "JBFqnCBsd6RMkjVDRZzb"  # George — British, narrator, very Jarvis
-model = "eleven_turbo_v2_5"
+voice_id = "JBFqnCBsd6RMkjVDRZzb"  # George — British narrator, very Jarvis
 ```
 
-Browse more voices in the [ElevenLabs Voice Library](https://elevenlabs.io/app/voice-library) — copy any voice's ID into `voice_id`. Your EL API key only needs `text_to_speech` scope.
+Browse more voices in the [ElevenLabs Voice Library](https://elevenlabs.io/app/voice-library) — copy any voice's ID into `voice_id`. Your EL key only needs `text_to_speech` scope.
 
-### Pure local profile (offline-capable)
+### Pure local airplane-mode profile
 
 ```toml
 [llm]
@@ -208,7 +261,7 @@ provider = "say"               # macOS built-in
 fallback = ""
 ```
 
-No network calls. Voice quality drops; this is your "airplane mode".
+No network calls of any kind. Voice quality drops; this is your true offline floor.
 
 ## Operating
 
@@ -218,7 +271,7 @@ No network calls. Voice quality drops; this is your "airplane mode".
 | Fire a synthetic event | `uv run jarvis-cc test --event permission_prompt --tool Bash` |
 | Manually trigger Jarvis (LLM phrases it) | `uv run jarvis-cc say --reason user-input-requested` |
 | Manually trigger Jarvis (read exact text) | `uv run jarvis-cc say --text "Sir, shall we proceed?"` |
-| Tail daemon logs | `tail -f ~/.jarvis-cc/logs/daemon.stderr.log` |
+| Tail daemon logs | `tail -f ~/.jarvis-cc/daemon.log` |
 | Reload daemon | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` |
 | Update API keys in plist | re-run `uv run jarvis-cc install` (idempotent) |
 | Uninstall (keep data) | `uv run jarvis-cc uninstall` |
@@ -230,24 +283,32 @@ No network calls. Voice quality drops; this is your "airplane mode".
 
 - `uv run jarvis-cc status` — daemon reachable?
 - `launchctl list | grep jarvis` — service running?
-- `tail ~/.jarvis-cc/logs/daemon.stderr.log` — error lines?
+- `tail ~/.jarvis-cc/daemon.log` — error lines?
 - Test the leaf: `say "test"` — speakers working?
 
 **Daemon up but `last_text` never changes.** The hook isn't reaching the socket. Common causes:
 
-- You added `ELEVENLABS_API_KEY` / `DEEPSEEK_API_KEY` **after** installing — re-run `jarvis-cc install` to re-bake them into the plist, then reload the daemon.
+- You added API keys **after** installing — re-run `jarvis-cc install` to re-bake them into the plist, then reload the daemon.
 - Your Claude Code session was running **before** install — restart CC so it re-reads `~/.claude/settings.json`.
 - `cat ~/.claude/settings.json | jq '.hooks.Notification'` should show the absolute path to `.venv/bin/jarvis-cc-hook`. If it shows a bare `jarvis-cc-hook`, re-run install.
 
+**You hear "Sir, the local language model … appears unreachable. I am falling back to the cloud."** Ollama either isn't running, the model isn't pulled, or the request timed out. Start `ollama serve`, confirm `ollama list` includes the model from `config.toml`, and try `curl http://localhost:11434/api/tags`. The alert is throttled to once every five minutes during a sustained outage.
+
+**CosyVoice doubles short lines ("Sir Sir, ready ready").** You haven't filled in `[tts.cosyvoice] ref_text_en` — without a transcript the provider falls back to `inference_cross_lingual`, which hallucinates repeats on short utterances. Transcribe your `jarvis_en.wav` (`uvx --from openai-whisper whisper jarvis_en.wav --model tiny --language English`) and paste the cleaned text into the config field.
+
+**XTTS pipeline crashes with `isin_mps_friendly` ImportError.** `transformers>=5` removed the symbol coqui-tts 0.27 still imports. The `[xtts]` extra in `pyproject.toml` pins `transformers<5` precisely for this — re-run `uv sync --extra xtts`.
+
+**`say` reports `Opening output file failed: fmt?`.** That's the macOS `say` binary refusing to write a `.wav` without an explicit `--data-format`. The provider handles this for you (`--data-format=LEF32@22050`); the message means you're running an older copy of the daemon. Re-`uv sync` and reload.
+
+**ElevenLabs 401 with `quota_exceeded`.** Your free credits are out. ElevenLabs returns 401 (not 402/429) for quota — the daemon translates this into a single readable line in `daemon.log` (`TTS provider elevenlabs failed: ElevenLabs quota exhausted: …`). Top up, switch to a key with quota, or move to CosyVoice / XTTS.
+
 **Ollama returns empty text on qwen3 / R1-style models.** Make sure your Ollama is 0.9+; the provider passes `think: false` automatically. If you pinned an older Ollama, upgrade.
 
-**ElevenLabs 401.** Your API key is missing `text_to_speech` scope. Regenerate it in ElevenLabs → Profile → API Keys with permissions = Full (or include `text_to_speech` explicitly).
-
-**Jarvis says the wrong thing about my command.** Content-awareness pipes `tool_input` (e.g. the actual Bash command, the file basename) into the LLM prompt. If the line still feels generic, check `tail ~/.jarvis-cc/logs/daemon.stderr.log` for whether the provider call succeeded — when LLMs error out, the daemon falls back to the generic template. The `phrase_max_chars` key in older configs is silently ignored; set `phrase_target_chars` / `phrase_hard_cap` instead.
+**Jarvis says the wrong thing about my command.** Content-awareness pipes `tool_input` (e.g. the actual Bash command, the file basename) into the LLM prompt. If the line still feels generic, check `daemon.log` for whether the provider call succeeded — when LLMs error out, the daemon falls back to the generic template.
 
 ## Manual triggers
 
-Claude Code only fires its Notification hook for tool-permission prompts, idle waits, and MCP elicitation. Some scenarios fall outside that — most notably assistant-initiated questions (`AskUserQuestion`). Two modes:
+Claude Code only fires its Notification hook for tool-permission prompts, idle waits, and MCP elicitation. Some scenarios fall outside that — most notably assistant-initiated questions (`AskUserQuestion`, which goes through the `PreToolUse` hook now). Two modes:
 
 **LLM phrases it** — give the model a context label, let it write the line:
 
@@ -273,7 +334,7 @@ uv run jarvis-cc say \
 # next `say` without --voice goes back to the config-default voice
 ```
 
-`--voice` is an ElevenLabs `voice_id` when the active TTS provider is ElevenLabs, or a macOS `say` voice name (eg `Karen`, `Daniel`, `Tingting`) when the active provider is `say`. XTTS-v2 ignores the override.
+`--voice` is an ElevenLabs `voice_id` when the active TTS provider is ElevenLabs, or a macOS `say` voice name (eg `Karen`, `Daniel`, `Tingting`) when the active provider is `say`. CosyVoice and XTTS both ignore the override — they clone from the reference audio, not from a named voice.
 
 All modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `--reason` or an auto-uuid) so dedup never collapses successive calls.
 
@@ -289,23 +350,30 @@ src/jarvis_cc/
 │   ├── queue.py          # bounded drop-oldest queue
 │   └── health.py         # /health on 127.0.0.1:9527
 ├── phrase/
-│   ├── router.py         # LLM chain: primary → fallback → templates
+│   ├── router.py         # LLM chain + on_primary_fallback alert hook
 │   ├── language.py       # cwd → 'zh' | 'en'
 │   ├── prompt.py         # Jarvis-tone system prompt + few-shot
 │   ├── templates.py      # final fallback strings
 │   └── providers/        # deepseek, anthropic, openai, ollama
 ├── tts/
 │   ├── engine.py         # primary → fallback
-│   └── providers/        # xtts, elevenlabs, say
-├── player.py             # async afplay wrapper
+│   └── providers/        # cosyvoice, xtts, elevenlabs, say
+├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
 └── install.py            # CLI: install / uninstall / status / test
 ```
 
-63 unit + integration tests under `tests/`. Run with `uv run pytest`.
+150+ unit + integration tests under `tests/`. Run with `uv run pytest`.
 
 ## License
 
-MIT. See `LICENSE`.
+The project code is MIT — see `LICENSE`.
 
-Voice samples, recorded models, and ElevenLabs-generated audio are subject to their own terms — never commit reference audio or generated voice clones of real persons to this repo.
+Third-party model weights have their own licenses; the project leaves the user
+in control of which path they install:
+
+- **CosyVoice 3** (`spensercai/CosyVoice3-0.5B-Candle`, `cosyvoice3.rs`) — **Apache-2.0**. Commercial use OK.
+- **XTTS-v2** (`coqui/XTTS-v2`) — **CPML, non-commercial**. The model weights themselves prohibit commercial use; the `[xtts]` extra is kept available for personal / research deployments only.
+- **ElevenLabs / DeepSeek / Anthropic / OpenAI** — bound by each provider's own ToS.
+
+Voice samples, recorded models, and synthesised audio are subject to their own terms — never commit reference audio or generated voice clones of real persons to this repo.
