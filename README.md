@@ -1,8 +1,8 @@
 # jarvis-cc
 
-A Jarvis-voiced notification layer for [Claude Code](https://claude.com/claude-code).
+A Jarvis-voiced notification layer for [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex).
 
-When Claude Code needs your attention — permission prompts, idle waits, MCP elicitation dialogs, AskUserQuestion options — a daemon speaks one short, British-butler-toned sentence so you don't miss the moment while pouring coffee or stepping away from the screen.
+When Claude Code or Codex CLI needs your attention — permission prompts, idle waits, MCP elicitation dialogs, AskUserQuestion options, Codex `PermissionRequest`/`agent-turn-complete` — a daemon speaks one short, British-butler-toned sentence so you don't miss the moment while pouring coffee or stepping away from the screen. One daemon serves both clients.
 
 ```
 [ Claude Code asks: Allow `rm -rf /` ? ]
@@ -16,8 +16,12 @@ The default stack is **fully local, zero-cost**: Ollama for phrasing, CosyVoice 
 ## How it works
 
 ```
-Claude Code ──Notification / PreToolUse hooks──► jarvis-cc-hook (one-shot, <10ms)
-            └ UserPromptSubmit / PostToolUse hooks ─► cancel signal
+Claude Code ──Notification / PreToolUse hooks──┐
+            └ UserPromptSubmit / PostToolUse ──┤
+                                               │
+Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cc-hook (one-shot, <10ms)
+            └ UserPromptSubmit / PostToolUse ──┤
+            └ notify (agent-turn-complete) ────┘
                                                 │
                                                 ▼ Unix socket
                                     jarvis-cc-daemon (launchd, KeepAlive)
@@ -32,6 +36,10 @@ Claude Code ──Notification / PreToolUse hooks──► jarvis-cc-hook (one-s
                                                                       ▼
                                                                    ffplay / afplay
 ```
+
+See [`docs/CODEX.md`](docs/CODEX.md) for the Codex CLI event mapping and
+verification recipe, or [`docs/SWITCHING.md`](docs/SWITCHING.md) for
+swapping providers afterwards.
 
 - Hook is fire-and-forget (returns under 10ms; never blocks CC).
 - Daemon runs forever under launchd, restarted on crash.
@@ -90,7 +98,7 @@ This will:
 
 1. Create `~/.jarvis-cc/{voices,models,logs}/`.
 2. Write a default `~/.jarvis-cc/config.toml` if absent.
-3. Patch `~/.claude/settings.json` to register `Notification`, `PreToolUse`, `UserPromptSubmit`, and `PostToolUse` hooks pointing at the absolute path of `jarvis-cc-hook` in the project venv.
+3. Patch `~/.claude/settings.json` to register `Notification`, `PreToolUse`, `UserPromptSubmit`, and `PostToolUse` hooks pointing at the absolute path of `jarvis-cc-hook` in the project venv. If `~/.codex/` exists, also patch `~/.codex/config.toml` with the equivalent Codex lifecycle hooks plus `notify` (sentinel-fenced block, idempotent; see [`docs/CODEX.md`](docs/CODEX.md)).
 4. Write `~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` with your API keys embedded. CosyVoice users need `COQUI_TOS_AGREED=1` only if they also enabled the XTTS path (XTTS uses Coqui-TTS internally).
 5. `launchctl load` the plist — daemon starts immediately and on every login.
 
@@ -119,7 +127,7 @@ which audibly doubles short utterances.
 # Same reference-audio expectation as above.
 ```
 
-Now **restart any running Claude Code sessions** so they pick up the patched `settings.json`.
+Now **restart any running Claude Code or Codex CLI sessions** so they pick up the patched config files.
 
 > **Upgrading from an older install?** Re-run `uv run jarvis-cc install` to
 > register the new `UserPromptSubmit` and `PostToolUse` hooks that drive
