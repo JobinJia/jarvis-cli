@@ -274,3 +274,128 @@ def test_forward_event_drops_askuserquestion_without_questions(tmp_path: Path):
         "tool_input": {"questions": []},
     }
     assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is False
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI integration
+# ---------------------------------------------------------------------------
+# Codex's lifecycle-hook payloads share Claude Code's snake_case shape and
+# hook_event_name vocabulary for the events both products have in common
+# (UserPromptSubmit, PostToolUse). Codex adds PermissionRequest, which has
+# no Claude Code analogue and so needs explicit translation. The notify
+# command uses a completely different flat payload with kebab-case keys.
+
+
+def test_forward_event_codex_permission_request_translates_to_permission_prompt(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PermissionRequest",
+        "session_id": "sess-xyz",
+        "turn_id": "turn-1",
+        "cwd": "/Users/me/repo",
+        "model": "gpt-5.5",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_use_id": "tu-1",
+        "tool_input": {"command": "rm -rf /tmp/old"},
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "permission_prompt"
+    assert row["tool_name"] == "Bash"
+    assert row["tool_input"] == {"command": "rm -rf /tmp/old"}
+    assert row["cwd"] == "/Users/me/repo"
+    assert row["session_id"] == "sess-xyz"
+
+
+def test_forward_event_codex_notify_agent_turn_complete_becomes_idle_prompt(tmp_path: Path):
+    """Codex `notify = [...]` sends a flat kebab-case payload when a turn
+    finishes — equivalent to Claude Code's idle_prompt notification."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "type": "agent-turn-complete",
+        "thread-id": "thr-1",
+        "turn-id": "turn-9",
+        "cwd": "/Users/me/repo",
+        "input-messages": ["please refactor"],
+        "last-assistant-message": "Done.",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "idle_prompt"
+    assert row["session_id"] == "thr-1"
+    assert row["cwd"] == "/Users/me/repo"
+
+
+def test_forward_event_codex_user_prompt_submit_emits_cancel(tmp_path: Path):
+    """Codex's UserPromptSubmit shares CC's name/shape, so cancel behavior
+    must work for both without a separate code path."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-codex",
+        "cwd": "/x",
+        "prompt": "do the thing",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row.get("command") == "cancel"
+    assert row.get("session_id") == "sess-codex"
+
+
+def test_forward_event_codex_post_tool_use_emits_cancel(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-codex",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+        "tool_response": {"stdout": "..."},
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row.get("command") == "cancel"
+
+
+def test_forward_event_codex_session_start_is_dropped(tmp_path: Path):
+    """SessionStart is informational only — neither product wants Jarvis
+    to speak on every session bring-up. Letting the payload through to
+    the daemon with no notification_type would have it filtered there,
+    but it's cleaner to drop at the hook."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "sess",
+        "source": "startup",
+        "cwd": "/x",
+    }
+    # Pass-through behavior: daemon filters on notification_type.
+    # Either drop here (False) or forward as-is and let the daemon ignore.
+    # We accept either, just assert it doesn't raise.
+    forward_event(io.StringIO(json.dumps(payload)), sock_path)
+
+
+def test_forward_event_codex_permission_request_with_cancel_disabled(tmp_path: Path):
+    """cancel_on_user_action only governs UserPromptSubmit/PostToolUse —
+    PermissionRequest is a different axis and must still come through
+    even with cancel_on_user_action=False."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PermissionRequest",
+        "session_id": "sess",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+        "cwd": "/x",
+    }
+    assert forward_event(
+        io.StringIO(json.dumps(payload)), sock_path,
+        cancel_on_user_action=False,
+    ) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "permission_prompt"

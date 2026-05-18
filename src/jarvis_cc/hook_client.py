@@ -93,10 +93,21 @@ def _first_question_is_usable(questions: list) -> bool:
 
 
 def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
-    """Rewrite a raw CC hook payload into the daemon's normalized shape.
+    """Rewrite a raw hook payload (Claude Code OR Codex CLI) into the
+    daemon's normalized shape.
 
-    Returns the new dict, or None if the payload can't/shouldn't be forwarded.
-    Returns the original (unchanged) for payloads already in daemon shape.
+    Both products send lifecycle-hook payloads with the same snake_case
+    shape and overlapping `hook_event_name` vocabulary (UserPromptSubmit,
+    PostToolUse, PreToolUse), so those code paths are shared. Codex-only
+    pieces handled here:
+      * `PermissionRequest` → translated to a permission_prompt event so
+        the daemon's existing routing pipeline can speak it.
+      * `notify`'s flat `agent-turn-complete` payload (kebab-case, no
+        `hook_event_name`) → translated to idle_prompt.
+
+    Returns the new dict, or None if the payload can't/shouldn't be
+    forwarded. Returns the original (unchanged) for payloads already in
+    daemon shape.
 
     For AskUserQuestion the behavior depends on `lang_mode`:
       - "auto" → render verbatim text + lang in the hook (no LLM round-trip);
@@ -105,12 +116,36 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
         phrase router calls Ollama/DeepSeek to translate-and-rephrase into a
         Jarvis-toned line in the user's chosen output language.
     """
+    # Codex `notify` payload — flat, kebab-case keys, `type` discriminator.
+    # Currently only `agent-turn-complete` is emitted, but check by type
+    # rather than presence so future Codex notify types fall through to
+    # a no-op rather than triggering the wrong event.
+    if payload.get("type") == "agent-turn-complete":
+        return {
+            "notification_type": "idle_prompt",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("thread-id"),
+        }
+
     hook_event = payload.get("hook_event_name")
     if hook_event in ("UserPromptSubmit", "PostToolUse"):
         sid = payload.get("session_id")
         if not sid:
             return None
         return {"command": "cancel", "session_id": sid}
+    # Codex permission prompt — no Claude Code analogue. Translate to
+    # the daemon's permission_prompt notification so the existing phrase
+    # router + TTS pipeline handles it identically.
+    if hook_event == "PermissionRequest":
+        return {
+            "notification_type": "permission_prompt",
+            "tool_name": payload.get("tool_name"),
+            "tool_input": payload.get("tool_input") or {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
     if hook_event == "PreToolUse" and \
             payload.get("tool_name") == "AskUserQuestion":
         ti = payload.get("tool_input") or {}
