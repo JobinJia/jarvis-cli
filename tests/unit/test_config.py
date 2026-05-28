@@ -5,6 +5,17 @@ import pytest
 from jarvis_cc.config import load_config
 
 
+def test_humor_level_clamps_out_of_range_values(tmp_path: Path):
+    """A typo in user TOML must not leave the daemon refusing to start."""
+    p = tmp_path / "c.toml"
+    p.write_text("[behavior]\nhumor_level = 99\n")
+    assert load_config(p).behavior.humor_level == 3
+    p.write_text("[behavior]\nhumor_level = -7\n")
+    assert load_config(p).behavior.humor_level == 0
+    p.write_text("[behavior]\nhumor_level = 2\n")
+    assert load_config(p).behavior.humor_level == 2
+
+
 def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     cfg = load_config(tmp_path / "missing.toml")
     assert cfg.llm.provider == "deepseek"
@@ -18,7 +29,15 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
         "idle_prompt",
         "elicitation_dialog",
         "ask_user_question",
+        "session_start",
     ]
+    # session_briefing block defaults in lockstep with the install.py TOML.
+    assert cfg.behavior.session_briefing.enabled is True
+    assert cfg.behavior.session_briefing.city == ""
+    assert cfg.behavior.session_briefing.weather_ttl_seconds == 600
+    assert cfg.behavior.session_briefing.min_interval_seconds == 0
+    # humor_level defaults to 1 (light wit). Clamped on load.
+    assert cfg.behavior.humor_level == 1
 
 
 def test_load_config_reads_toml(tmp_path: Path):

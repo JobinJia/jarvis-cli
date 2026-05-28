@@ -47,6 +47,7 @@ class PhraseRouter:
             event, lang, summary,
             target_chars=target_chars,
             hard_cap=hard_cap,
+            humor_level=self.cfg.behavior.humor_level,
         )
         primary_failed = False
         for i, provider in enumerate((self.primary, self.fallback)):

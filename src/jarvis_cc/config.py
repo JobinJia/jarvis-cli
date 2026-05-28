@@ -114,6 +114,27 @@ class PrivacyConfig:
 
 
 @dataclass
+class SessionBriefingConfig:
+    """Iron-Man-style opening briefing on new CC/Codex sessions:
+    greeting + local time + weather, English voice, no LLM round-trip.
+    """
+    enabled: bool = True
+    # City queried against wttr.in. Empty = derive from timezone tail
+    # (`Asia/Shanghai` → "Shanghai"). Override to pin a location when
+    # the timezone is a continent root or you're abroad on a VPN.
+    city: str = ""
+    # How long a single weather lookup is reused across briefings — keeps
+    # us off wttr.in if you open ten sessions in two minutes.
+    weather_ttl_seconds: int = 600
+    # Floor between briefings. 0 = every session_start speaks. Bump up if
+    # you open many tabs and find the chorus tiresome.
+    min_interval_seconds: int = 0
+    # HTTP timeout for the weather fetch. Briefing falls back to a
+    # time-only line if this elapses — we never block the worker on it.
+    weather_timeout_seconds: float = 3.0
+
+
+@dataclass
 class BehaviorConfig:
     dedup_window_seconds: int = 10
     queue_max_size: int = 5
@@ -128,6 +149,7 @@ class BehaviorConfig:
             "idle_prompt",
             "elicitation_dialog",
             "ask_user_question",
+            "session_start",
         ]
     )
     # DEPRECATED: kept so old config.toml files don't error on load. Not read
@@ -138,7 +160,16 @@ class BehaviorConfig:
     # When True (default), the hook sends a cancel signal on UserPromptSubmit /
     # PostToolUse so the daemon stops any in-flight audio for that session.
     cancel_on_user_action: bool = True
+    # How much wit Jarvis allows himself, 0-3. Plumbed into both the phrase
+    # router system prompt and the session-start briefing prompt.
+    #   0 — deadpan formal butler (no jokes)
+    #   1 — hint of dry wit (default for first-time users)
+    #   2 — MCU Jarvis: dry banter, witty asides
+    #   3 — Tony-mode: openly sardonic, never sycophantic
+    # Out-of-range values are clamped on load by `load_config`.
+    humor_level: int = 1
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    session_briefing: SessionBriefingConfig = field(default_factory=SessionBriefingConfig)
 
 
 @dataclass
@@ -193,6 +224,9 @@ def load_config(path: str | Path) -> Config:
     cfg.tts.cosyvoice.model_dir = expanduser(cfg.tts.cosyvoice.model_dir)
     cfg.tts.cosyvoice.ref_audio_zh = expanduser(cfg.tts.cosyvoice.ref_audio_zh)
     cfg.tts.cosyvoice.ref_audio_en = expanduser(cfg.tts.cosyvoice.ref_audio_en)
+    # Clamp humor_level rather than rejecting — a typo in config shouldn't
+    # leave the daemon refusing to start.
+    cfg.behavior.humor_level = max(0, min(3, int(cfg.behavior.humor_level)))
     return cfg
 
 

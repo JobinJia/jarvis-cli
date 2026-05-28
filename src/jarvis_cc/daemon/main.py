@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..briefing import WeatherCache, compose_briefing
 from ..config import DEFAULT_CONFIG_PATH, Config, load_config
 from ..phrase.language import detect_for
 from ..phrase.providers.anthropic import AnthropicProvider
@@ -91,6 +92,12 @@ class Daemon:
         # extended ollama outage.
         self._last_phrase_fallback_alert_at: float = 0.0
         self._phrase_fallback_alert_throttle_s: float = 300.0
+        # Session briefing: shared weather cache + per-machine throttle
+        # (user-configurable; default 0 = announce every session_start).
+        self._weather_cache = WeatherCache(
+            ttl_seconds=cfg.behavior.session_briefing.weather_ttl_seconds,
+        )
+        self._last_briefing_at: float = 0.0
 
     def _snapshot(self) -> dict:
         return {
@@ -135,11 +142,31 @@ class Daemon:
                 pass
 
     async def _on_event(self, event: Event) -> None:
+        dkey = event.dedup_key()
         if event.notification_type not in self.cfg.behavior.events:
+            logger.debug("DROP filtered-by-events-allowlist key={}", dkey)
             return
+        # session_start has its own gate (enabled flag + per-machine floor)
+        # in addition to the generic dedup. Drop early so we don't waste a
+        # queue slot when the user opens five tabs in a minute.
+        if event.notification_type == "session_start":
+            sb = self.cfg.behavior.session_briefing
+            if not sb.enabled:
+                logger.debug("DROP session_briefing.enabled=false key={}", dkey)
+                return
+            now = time.monotonic()
+            if sb.min_interval_seconds > 0 and \
+                    now - self._last_briefing_at < sb.min_interval_seconds:
+                logger.debug(
+                    "DROP session_start throttled key={} last={:.0f}s ago",
+                    dkey, now - self._last_briefing_at,
+                )
+                return
+            self._last_briefing_at = now
         if self.dedup.is_duplicate(event):
-            logger.debug("Dedup: {}", event.dedup_key())
+            logger.debug("DROP dedup-hit key={}", dkey)
             return
+        logger.debug("QUEUE key={}", dkey)
         await self.queue.put_or_drop(event)
 
     async def _worker(self) -> None:
@@ -159,6 +186,18 @@ class Daemon:
                     # Caller pre-baked the phrase; skip the LLM entirely.
                     text = event.text
                     lang = event.lang or "en"
+                elif event.notification_type == "session_start":
+                    # Compose Jarvis briefing inline. We hand the primary
+                    # phrase provider (Ollama by default) in so the line is
+                    # freshly phrased each session — falls back to a
+                    # rotating template if the LLM is unreachable. Weather
+                    # fetch is best-effort with a TTL cache.
+                    text, lang = await compose_briefing(
+                        self.cfg.behavior.session_briefing,
+                        cache=self._weather_cache,
+                        llm=self.router.primary,
+                        humor_level=self.cfg.behavior.humor_level,
+                    )
                 else:
                     lang = (
                         detect_for(event.cwd)
@@ -167,6 +206,10 @@ class Daemon:
                     )
                     text = await self.router.phrase(event, lang=lang)
                 self._last_text = text
+                logger.debug(
+                    "PLAY type={} sid={} text={!r}",
+                    event.notification_type, sid, text[:80],
+                )
                 if await self._try_stream(
                     text, lang, event.voice_id,
                     on_spawn=_register, session_id=sid,

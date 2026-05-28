@@ -130,6 +130,21 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
         }
 
     hook_event = payload.get("hook_event_name")
+    if hook_event == "SessionStart":
+        # Only the genuine cold start should speak. CC also sends this
+        # event on `/clear` and resumed sessions; those shouldn't blast
+        # the user with a fresh briefing every time. `source` is one of
+        # "startup", "resume", "clear" — both clients use the same field.
+        source = payload.get("source")
+        if source and source != "startup":
+            return None
+        return {
+            "notification_type": "session_start",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
     if hook_event in ("UserPromptSubmit", "PostToolUse"):
         sid = payload.get("session_id")
         if not sid:

@@ -16,13 +16,14 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 
 import re
 
-from .config import DEFAULT_CONFIG_PATH, expanduser
+from .config import DEFAULT_CONFIG_PATH, expanduser, load_config
 
 PLIST_LABEL = "com.jobin.jarvis-cc"
 PLIST_PATH = expanduser(f"~/Library/LaunchAgents/{PLIST_LABEL}.plist")
@@ -47,7 +48,7 @@ def _is_our_hook(hook: dict) -> bool:
     return Path(hook.get("command", "")).name == "jarvis-cc-hook"
 
 
-_OUR_HOOK_TYPES = ("Notification", "UserPromptSubmit", "PostToolUse")
+_OUR_HOOK_TYPES = ("Notification", "UserPromptSubmit", "PostToolUse", "SessionStart")
 
 
 def merge_claude_settings(existing: dict, hook_command: str) -> dict:
@@ -132,6 +133,12 @@ def _render_codex_block(hook_command: str) -> str:
         'type = "command"\n'
         f'command = "{hook_command}"\n'
         "timeout = 5\n"
+        "\n"
+        "[[hooks.SessionStart]]\n"
+        "[[hooks.SessionStart.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
         f"{_CODEX_BLOCK_END}\n"
     )
 
@@ -211,6 +218,360 @@ def render_plist(label: str, program: str, log_dir: str, env: dict[str, str]) ->
     )
 
 
+# --- install wizard --------------------------------------------------------
+#
+# Goal: a first-time `jarvis-cc install` should leave a working, opinionated
+# setup with a one-screen Q&A — no editing config.toml by hand. Existing
+# installs keep their config untouched unless the user passes --reconfigure.
+# Both paths still patch the CC/Codex hooks and the launchd plist.
+
+
+_HUMOR_LABELS: tuple[tuple[str, str], ...] = (
+    ("deadpan", "Strictly formal — no jokes, no asides."),
+    ("light wit", "A hint of dry wit when natural."),
+    ("MCU Jarvis", "Banter-prone, occasional wry observation."),
+    ("Tony-mode", "Openly sardonic; teases when warranted."),
+)
+
+# Wizard profile presets. The keys are stable identifiers used in
+# recommendation logic; the values are the (llm_provider, llm_fallback,
+# tts_provider, tts_fallback) tuples written into the rendered config.toml.
+_PROFILES: dict[str, dict[str, str]] = {
+    "local-zero-cost": {
+        "label": "Local zero-cost (Ollama + CosyVoice)",
+        "llm_provider": "ollama", "llm_fallback": "deepseek",
+        "tts_provider": "cosyvoice", "tts_fallback": "say",
+    },
+    "cloud-cheap": {
+        "label": "Cloud-cheap (DeepSeek + ElevenLabs)",
+        "llm_provider": "deepseek", "llm_fallback": "ollama",
+        "tts_provider": "elevenlabs", "tts_fallback": "say",
+    },
+    "say-only": {
+        "label": "Offline floor (Ollama + macOS `say`)",
+        "llm_provider": "ollama", "llm_fallback": "",
+        "tts_provider": "say", "tts_fallback": "",
+    },
+}
+
+
+@dataclass
+class EnvScan:
+    """Snapshot of what providers / assets are usable right now."""
+    ollama_up: bool = False
+    ollama_models: list[str] = field(default_factory=list)
+    has_deepseek_key: bool = False
+    has_anthropic_key: bool = False
+    has_openai_key: bool = False
+    has_elevenlabs_key: bool = False
+    has_cosyvoice_model: bool = False
+    has_xtts_model: bool = False
+    has_jarvis_en_voice: bool = False
+    has_jarvis_zh_voice: bool = False
+
+
+def scan_environment(jarvis_dir: Path | None = None) -> EnvScan:
+    """Quick non-blocking probe of the operator's setup.
+
+    Pure-by-construction: it doesn't write anything. Used both by the
+    wizard (to recommend a profile) and surfaced to the user as a
+    one-screen summary at the top of install.
+    """
+    base = Path(jarvis_dir) if jarvis_dir else Path(JARVIS_DIR)
+    scan = EnvScan(
+        has_deepseek_key=bool(os.environ.get("DEEPSEEK_API_KEY")),
+        has_anthropic_key=bool(os.environ.get("ANTHROPIC_API_KEY")),
+        has_openai_key=bool(os.environ.get("OPENAI_API_KEY")),
+        has_elevenlabs_key=bool(os.environ.get("ELEVENLABS_API_KEY")),
+    )
+    cosy_dir = base / "models" / "cosyvoice3-0.5b-candle"
+    xtts_dir = base / "models" / "xtts-v2"
+    scan.has_cosyvoice_model = cosy_dir.exists() and any(cosy_dir.iterdir()) if cosy_dir.exists() else False
+    scan.has_xtts_model = xtts_dir.exists() and any(xtts_dir.iterdir()) if xtts_dir.exists() else False
+    scan.has_jarvis_en_voice = (base / "voices" / "jarvis_en.wav").exists()
+    scan.has_jarvis_zh_voice = (base / "voices" / "jarvis_zh.wav").exists()
+    try:
+        r = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        if r.status_code == 200:
+            scan.ollama_up = True
+            scan.ollama_models = [m["name"] for m in r.json().get("models", [])]
+    except httpx.HTTPError:
+        pass
+    return scan
+
+
+def recommend_profile(env: EnvScan) -> str:
+    """Pick the most sensible profile for the detected environment.
+
+    Priority: local-zero-cost > cloud-cheap > say-only. Local wins if BOTH
+    Ollama is up AND CosyVoice weights are present (the only combo where
+    the user pays no per-call cost and gets a high-quality voice). Cloud-
+    cheap requires both an LLM key and ElevenLabs. Otherwise fall back to
+    the offline floor so the user always gets *something* speakable.
+    """
+    if env.ollama_up and env.has_cosyvoice_model:
+        return "local-zero-cost"
+    has_any_cloud_llm = (
+        env.has_deepseek_key or env.has_anthropic_key or env.has_openai_key
+    )
+    if has_any_cloud_llm and env.has_elevenlabs_key:
+        return "cloud-cheap"
+    return "say-only"
+
+
+def _print_env_summary(env: EnvScan) -> None:
+    def _tick(ok: bool) -> str:
+        return "✓" if ok else "✗"
+
+    print("\nEnvironment scan:")
+    if env.ollama_up:
+        models = ", ".join(env.ollama_models[:5]) if env.ollama_models else "no models pulled"
+        print(f"  {_tick(True)} Ollama running ({models})")
+    else:
+        print(f"  {_tick(False)} Ollama not reachable on localhost:11434")
+    keys = [
+        ("DEEPSEEK_API_KEY", env.has_deepseek_key),
+        ("ANTHROPIC_API_KEY", env.has_anthropic_key),
+        ("OPENAI_API_KEY", env.has_openai_key),
+        ("ELEVENLABS_API_KEY", env.has_elevenlabs_key),
+    ]
+    for k, v in keys:
+        print(f"  {_tick(v)} {k} {'present' if v else 'missing'}")
+    print(f"  {_tick(env.has_cosyvoice_model)} CosyVoice model weights")
+    print(f"  {_tick(env.has_xtts_model)} XTTS model weights")
+    print(f"  {_tick(env.has_jarvis_en_voice)} reference clip jarvis_en.wav")
+
+
+# --- interactive prompt helpers --------------------------------------------
+
+
+def _is_interactive() -> bool:
+    """Wizard runs only when both stdin and stdout are TTYs. CI / piped
+    invocations get the non-interactive path automatically."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_str(question: str, default: str, *, interactive: bool) -> str:
+    if not interactive:
+        return default
+    label = f"{question} [{default}]: " if default else f"{question}: "
+    try:
+        raw = input(label).strip()
+    except EOFError:
+        return default
+    return raw or default
+
+
+def _prompt_int_choice(
+    question: str,
+    labels: list[str],
+    default_index: int,
+    *,
+    interactive: bool,
+) -> int:
+    """Numeric pick from a small enumerated list. Returns 0-based index."""
+    if not interactive:
+        return default_index
+    print(question)
+    for i, lbl in enumerate(labels):
+        marker = "*" if i == default_index else " "
+        print(f"  {marker} {i}) {lbl}")
+    while True:
+        try:
+            raw = input(f"Pick [{default_index}]: ").strip()
+        except EOFError:
+            return default_index
+        if not raw:
+            return default_index
+        if raw.isdigit() and 0 <= int(raw) < len(labels):
+            return int(raw)
+        print(f"  (enter 0–{len(labels) - 1}, or press Enter for default)")
+
+
+def _prompt_yes_no(question: str, default: bool, *, interactive: bool) -> bool:
+    if not interactive:
+        return default
+    hint = "[Y/n]" if default else "[y/N]"
+    try:
+        raw = input(f"{question} {hint}: ").strip().lower()
+    except EOFError:
+        return default
+    if not raw:
+        return default
+    return raw[0] == "y"
+
+
+# --- wizard ----------------------------------------------------------------
+
+
+@dataclass
+class WizardChoices:
+    humor_level: int
+    voice_language: str  # "en" | "zh" | "auto"
+    city: str            # "" = auto-detect from timezone
+    profile: str         # key of _PROFILES
+
+
+def run_wizard(env: EnvScan, *, existing: dict | None, interactive: bool) -> WizardChoices:
+    """Walk the user through humor / language / city / profile.
+
+    `existing` carries the values we'd default to (loaded from the current
+    config.toml). On a fresh install, pass None — defaults bake in.
+    """
+    if existing is None:
+        existing = {}
+
+    rec_profile = recommend_profile(env)
+    if interactive:
+        print(f"\nRecommended profile: {_PROFILES[rec_profile]['label']}")
+
+    # 1) humor level
+    cur_humor = int(existing.get("humor_level", 1))
+    cur_humor = max(0, min(3, cur_humor))
+    humor = _prompt_int_choice(
+        "\nHow much wit should Jarvis allow himself?",
+        [f"{label} — {desc}" for label, desc in _HUMOR_LABELS],
+        default_index=cur_humor,
+        interactive=interactive,
+    )
+
+    # 2) language
+    langs = ["en", "zh", "auto"]
+    lang_labels = [
+        "English (matches the British voice clone)",
+        "Chinese",
+        "Auto — pick per event from content",
+    ]
+    cur_lang = existing.get("voice_language", "en")
+    cur_lang_idx = langs.index(cur_lang) if cur_lang in langs else 0
+    lang_idx = _prompt_int_choice(
+        "\nWhich language should Jarvis speak?",
+        lang_labels, default_index=cur_lang_idx, interactive=interactive,
+    )
+
+    # 3) city
+    cur_city = existing.get("city", "")
+    city = _prompt_str(
+        "\nDefault city for weather (blank = auto-detect from timezone)",
+        default=cur_city, interactive=interactive,
+    )
+
+    # 4) profile
+    profile_keys = list(_PROFILES)
+    profile_labels = [_PROFILES[k]["label"] for k in profile_keys]
+    cur_profile = existing.get("profile") or rec_profile
+    cur_profile_idx = profile_keys.index(cur_profile) if cur_profile in profile_keys \
+        else profile_keys.index(rec_profile)
+    profile_idx = _prompt_int_choice(
+        "\nWhich provider profile?",
+        profile_labels, default_index=cur_profile_idx, interactive=interactive,
+    )
+
+    return WizardChoices(
+        humor_level=humor,
+        voice_language=langs[lang_idx],
+        city=city,
+        profile=profile_keys[profile_idx],
+    )
+
+
+def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = None) -> str:
+    """Render config.toml from wizard choices, optionally pulling forward
+    a handful of cosmetic / tuned values from an existing config so the
+    user doesn't lose a hand-set voice_id / ref_text / timesteps."""
+    p = preserve or {}
+    profile = _PROFILES[choices.profile]
+    ref_text_en = p.get("ref_text_en", "")
+    el_voice_id = p.get("elevenlabs_voice_id", "")
+    n_timesteps = int(p.get("cosyvoice_n_timesteps", 5))
+    return textwrap.dedent(f"""\
+        # jarvis-cc config.toml — written by `jarvis-cc install` wizard.
+        # Re-run with `jarvis-cc install --reconfigure` to walk through again.
+        [llm]
+        provider = "{profile['llm_provider']}"
+        fallback = "{profile['llm_fallback']}"
+
+        [llm.deepseek]
+        api_key_env = "DEEPSEEK_API_KEY"
+        model = "deepseek-chat"
+
+        [llm.ollama]
+        base_url = "http://localhost:11434"
+        model = "qwen3:8b"
+        timeout_seconds = 30
+
+        [tts]
+        provider = "{profile['tts_provider']}"
+        fallback = "{profile['tts_fallback']}"
+
+        [tts.cosyvoice]
+        model_dir = "~/.jarvis-cc/models/cosyvoice3-0.5b-candle"
+        ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
+        ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+        ref_text_en = {json.dumps(ref_text_en, ensure_ascii=False)}
+        n_timesteps = {n_timesteps}
+
+        [tts.xtts]
+        model_dir = "~/.jarvis-cc/models/xtts-v2"
+        ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
+        ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+        device = "mps"
+
+        [tts.elevenlabs]
+        api_key_env = "ELEVENLABS_API_KEY"
+        voice_id = "{el_voice_id}"
+        model = "eleven_turbo_v2_5"
+
+        [behavior]
+        dedup_window_seconds = 10
+        queue_max_size = 5
+        voice_language = "{choices.voice_language}"
+        # 0=deadpan, 1=light wit, 2=MCU Jarvis, 3=Tony-mode
+        humor_level = {choices.humor_level}
+        events = [
+            "permission_prompt",
+            "idle_prompt",
+            "elicitation_dialog",
+            "ask_user_question",
+            "session_start",
+        ]
+        phrase_target_chars = 70
+        phrase_hard_cap = 120
+        cancel_on_user_action = true
+
+        [behavior.privacy]
+        cloud_redaction = true
+
+        [behavior.session_briefing]
+        enabled = true
+        city = "{choices.city}"
+        weather_ttl_seconds = 600
+        min_interval_seconds = 0
+        weather_timeout_seconds = 3.0
+        """)
+
+
+def _extract_preservable(cfg_path: Path) -> dict:
+    """Pull forward a handful of tuned values from an existing config so a
+    re-run of the wizard doesn't blow them away. Best-effort — any parse
+    failure leaves the dict empty and the wizard falls back to defaults.
+    """
+    if not cfg_path.exists():
+        return {}
+    try:
+        cfg = load_config(cfg_path)
+    except Exception:  # noqa: BLE001 — wizard must never abort on parse drift
+        return {}
+    return {
+        "humor_level": cfg.behavior.humor_level,
+        "voice_language": cfg.behavior.voice_language,
+        "city": cfg.behavior.session_briefing.city,
+        "ref_text_en": cfg.tts.cosyvoice.ref_text_en,
+        "elevenlabs_voice_id": cfg.tts.elevenlabs.voice_id,
+        "cosyvoice_n_timesteps": cfg.tts.cosyvoice.n_timesteps,
+    }
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     # 1. Make jarvis-cc dir tree
     base = Path(JARVIS_DIR)
@@ -218,13 +579,32 @@ def cmd_install(args: argparse.Namespace) -> int:
     (base / "models").mkdir(parents=True, exist_ok=True)
     (base / "logs").mkdir(parents=True, exist_ok=True)
 
-    # 2. Write default config if not present
+    # 2. Wizard / config
     cfg_path = Path(DEFAULT_CONFIG_PATH)
-    if not cfg_path.exists():
-        cfg_path.write_text(_default_config_toml(), encoding="utf-8")
-        print(f"  wrote {cfg_path}")
+    interactive = _is_interactive() and not getattr(args, "non_interactive", False)
+    env = scan_environment(base)
+    _print_env_summary(env)
+
+    fresh = not cfg_path.exists()
+    reconfigure = getattr(args, "reconfigure", False)
+    run_the_wizard = fresh or reconfigure
+
+    if run_the_wizard:
+        existing = _extract_preservable(cfg_path) if cfg_path.exists() else None
+        choices = run_wizard(env, existing=existing, interactive=interactive)
+        rendered = _render_configured_toml(
+            choices,
+            preserve=existing or {},
+        )
+        if cfg_path.exists():
+            backup = cfg_path.with_suffix(cfg_path.suffix + ".bak")
+            shutil.copy2(cfg_path, backup)
+            print(f"  backed up old config → {backup}")
+        cfg_path.write_text(rendered, encoding="utf-8")
+        print(f"  wrote {cfg_path} (humor={choices.humor_level}, "
+              f"profile={choices.profile})")
     else:
-        print(f"  (kept existing {cfg_path})")
+        print(f"  (kept existing {cfg_path}; pass --reconfigure to re-run wizard)")
 
     # 3. Patch ~/.claude/settings.json
     settings_path = Path(CLAUDE_SETTINGS_PATH)
@@ -416,59 +796,19 @@ def cmd_say(args: argparse.Namespace) -> int:
         s.close()
 
 
-def _default_config_toml() -> str:
-    return textwrap.dedent(
-        """\
-        # jarvis-cc config.toml — auto-generated, edit freely
-        [llm]
-        # Primary defaults to deepseek for low TTFT; ollama is the offline fallback.
-        provider = "deepseek"
-        fallback = "ollama"
-
-        [llm.deepseek]
-        api_key_env = "DEEPSEEK_API_KEY"
-        model = "deepseek-chat"
-
-        [llm.ollama]
-        base_url = "http://localhost:11434"
-        model = "qwen2.5:7b"
-
-        [tts]
-        provider = "xtts"
-        fallback = "say"
-
-        [tts.xtts]
-        model_dir = "~/.jarvis-cc/models/xtts-v2"
-        ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
-        ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
-        device = "mps"
-
-        [tts.elevenlabs]
-        api_key_env = "ELEVENLABS_API_KEY"
-        voice_id = ""
-        model = "eleven_turbo_v2_5"
-
-        [behavior]
-        dedup_window_seconds = 10
-        queue_max_size = 5
-        # Language Jarvis SPEAKS in. "en" (default British voice identity),
-        # "zh", or "auto" (decide per-event from content).
-        voice_language = "en"
-        events = ["permission_prompt", "idle_prompt", "elicitation_dialog", "ask_user_question"]
-        # phrase_max_chars is deprecated and ignored; use the budget below.
-        phrase_target_chars = 70
-        phrase_hard_cap = 120
-
-        [behavior.privacy]
-        cloud_redaction = true
-        """
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(prog="jarvis-cc")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("install").set_defaults(func=cmd_install)
+    p_install = sub.add_parser("install")
+    p_install.add_argument(
+        "--reconfigure", action="store_true",
+        help="re-run the setup wizard even when config.toml already exists",
+    )
+    p_install.add_argument(
+        "--non-interactive", action="store_true",
+        help="skip all prompts; take defaults (current values when present)",
+    )
+    p_install.set_defaults(func=cmd_install)
     p_un = sub.add_parser("uninstall")
     p_un.add_argument("--purge", action="store_true", help="also remove ~/.jarvis-cc/")
     p_un.set_defaults(func=cmd_uninstall)

@@ -81,6 +81,11 @@ async def serve_unix_socket(
                 if ev is None:
                     logger.warning("Dropped malformed/unknown event: {!r}", line[:120])
                     continue
+                logger.debug(
+                    "RX event type={} tool={} cwd={} sid={} text={}",
+                    ev.notification_type, ev.tool_name, ev.cwd, ev.session_id,
+                    "pre-baked" if ev.text else "(via LLM)",
+                )
                 await on_event(ev)
         finally:
             writer.close()

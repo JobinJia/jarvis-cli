@@ -60,3 +60,51 @@ def test_build_messages_empty_summary_still_valid():
     assert msgs[-1]["role"] == "user"
     last = msgs[-1]["content"]
     assert '"summary": ""' in last or '"summary":""' in last
+
+
+# --- humor level injection --------------------------------------------------
+
+
+def test_build_messages_humor_0_renders_deadpan_clause():
+    msgs = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120, humor_level=0)
+    sys_msg = msgs[0]["content"]
+    assert "deadpan" in sys_msg.lower()
+    # Levels 1+ phrasing must NOT be present at level 0.
+    assert "MCU" not in sys_msg
+    assert "sardonic" not in sys_msg.lower()
+
+
+def test_build_messages_humor_2_renders_mcu_clause():
+    msgs = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120, humor_level=2)
+    sys_msg = msgs[0]["content"]
+    assert "MCU" in sys_msg
+    assert "banter" in sys_msg.lower()
+
+
+def test_build_messages_humor_3_renders_sardonic_clause():
+    msgs = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120, humor_level=3)
+    sys_msg = msgs[0]["content"]
+    assert "sardonic" in sys_msg.lower()
+
+
+def test_build_messages_out_of_range_humor_clamps():
+    """Defensive: a config typo of humor_level=99 must not crash the
+    prompt builder. Clamp to the highest defined clause."""
+    high = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120, humor_level=99)
+    assert "sardonic" in high[0]["content"].lower()
+    low = build_messages(_ev(), lang="en", summary="",
+                         target_chars=70, hard_cap=120, humor_level=-5)
+    assert "deadpan" in low[0]["content"].lower()
+
+
+def test_build_messages_default_humor_level_is_light_wit():
+    """Backwards compat: callers that don't pass humor_level get the
+    same tone they did before this feature existed."""
+    msgs = build_messages(_ev(), lang="en", summary="",
+                          target_chars=70, hard_cap=120)
+    sys_msg = msgs[0]["content"]
+    assert "hint of dry wit" in sys_msg

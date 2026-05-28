@@ -15,7 +15,9 @@ flow through the same Jarvis pipeline.
 | `UserPromptSubmit` | lifecycle hook | (cancel) | — kills in-flight audio for that session |
 | `PostToolUse` | lifecycle hook | (cancel) | — same |
 | `PreToolUse` | lifecycle hook | (no-op unless `AskUserQuestion`) | Codex has no AskUserQuestion tool, so PreToolUse fires but is filtered by the daemon's `events =` allowlist |
-| `SessionStart` / `Stop` | lifecycle hook | dropped | Intentional silence — not announcement-worthy. |
+| `SessionStart` (source = `startup`) | lifecycle hook | `session_start` | "Good evening, sir. The local time is …, …. In Shanghai it is 22 degrees and partly cloudy, with humidity at 100 percent and a brisk wind from the east-southeast. How may I be of service?" |
+| `SessionStart` (`resume` / `clear`) | lifecycle hook | dropped | Only cold starts speak. `/clear` and resumed sessions stay silent. |
+| `Stop` | lifecycle hook | dropped | Intentional silence — not announcement-worthy. |
 
 Cancel-on-user-action behavior works for Codex without any extra setup:
 Codex shares Claude Code's `UserPromptSubmit` and `PostToolUse` event names
@@ -66,6 +68,12 @@ timeout = 5
 
 [[hooks.PostToolUse]]
 [[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/abs/jarvis-cc-hook"
+timeout = 5
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
 type = "command"
 command = "/abs/jarvis-cc-hook"
 timeout = 5

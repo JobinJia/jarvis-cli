@@ -1,11 +1,20 @@
 import json
+import tomllib
 from pathlib import Path
+
+import httpx
+import pytest
 
 from jarvis_cc.install import (
     PLIST_LABEL,
+    EnvScan,
+    WizardChoices,
+    _render_configured_toml,
     merge_claude_settings,
+    recommend_profile,
     remove_from_claude_settings,
     render_plist,
+    scan_environment,
 )
 
 
@@ -207,3 +216,146 @@ def test_merge_codex_config_output_is_parseable_toml():
     assert len(parsed["hooks"]["PreToolUse"]) == 1
     assert parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "/abs/jarvis-cc-hook"
     assert parsed["projects"]["/x"]["trust_level"] == "trusted"
+
+
+# ---------------------------------------------------------------------------
+# Install wizard
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_profile_prefers_local_when_ollama_and_cosyvoice_present():
+    env = EnvScan(ollama_up=True, has_cosyvoice_model=True, has_deepseek_key=True)
+    assert recommend_profile(env) == "local-zero-cost"
+
+
+def test_recommend_profile_picks_cloud_cheap_when_ollama_missing_but_keys_present():
+    env = EnvScan(has_deepseek_key=True, has_elevenlabs_key=True)
+    assert recommend_profile(env) == "cloud-cheap"
+
+
+def test_recommend_profile_falls_back_to_say_only_when_nothing_usable():
+    """Operator with no LLM keys, no Ollama, no voice clone still must
+    get *a* working profile so they hear something on first install."""
+    assert recommend_profile(EnvScan()) == "say-only"
+
+
+def test_recommend_profile_skips_cloud_cheap_without_elevenlabs():
+    """A cloud LLM key alone isn't enough for the cloud-cheap profile —
+    that path requires both LLM and ElevenLabs for the voice."""
+    env = EnvScan(has_deepseek_key=True)
+    assert recommend_profile(env) == "say-only"
+
+
+def test_scan_environment_reads_keys_from_env_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Key detection must be pure env reads — no shelling out, no network."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-x")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+    # Stub the Ollama probe so the test doesn't depend on a live daemon.
+    def _no_ollama(*a, **kw):
+        raise httpx.ConnectError("no daemon in test")
+
+    monkeypatch.setattr(httpx, "get", _no_ollama)
+    env = scan_environment(tmp_path)
+    assert env.has_deepseek_key is True
+    assert env.has_anthropic_key is False
+    assert env.has_openai_key is False
+    assert env.has_elevenlabs_key is False
+    assert env.ollama_up is False
+
+
+def test_scan_environment_detects_voice_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    (tmp_path / "voices").mkdir()
+    (tmp_path / "voices" / "jarvis_en.wav").write_bytes(b"RIFF...")
+    (tmp_path / "models" / "cosyvoice3-0.5b-candle").mkdir(parents=True)
+    (tmp_path / "models" / "cosyvoice3-0.5b-candle" / "model.safetensors").write_bytes(b"\x00")
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda *a, **kw: (_ for _ in ()).throw(httpx.ConnectError("nope")),
+    )
+    env = scan_environment(tmp_path)
+    assert env.has_jarvis_en_voice is True
+    assert env.has_cosyvoice_model is True
+    assert env.has_xtts_model is False
+
+
+def test_scan_environment_detects_live_ollama(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When Ollama is reachable, we record its name and pulled models so
+    the wizard can show a useful summary instead of a bare ✓."""
+
+    class _R:
+        status_code = 200
+        def json(self):
+            return {"models": [{"name": "qwen3:8b"}, {"name": "llama3:8b"}]}
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _R())
+    env = scan_environment(tmp_path)
+    assert env.ollama_up is True
+    assert env.ollama_models == ["qwen3:8b", "llama3:8b"]
+
+
+def test_render_configured_toml_round_trips_through_load_config(tmp_path: Path):
+    """The wizard's output must parse cleanly via load_config — anything
+    else means a fresh-install user gets a broken daemon."""
+    from jarvis_cc.config import load_config
+
+    choices = WizardChoices(
+        humor_level=2, voice_language="en", city="Shanghai",
+        profile="local-zero-cost",
+    )
+    toml = _render_configured_toml(choices, preserve={"ref_text_en": "hello there"})
+
+    # Sanity on the rendered text.
+    parsed = tomllib.loads(toml)
+    assert parsed["behavior"]["humor_level"] == 2
+    assert parsed["behavior"]["voice_language"] == "en"
+    assert parsed["behavior"]["session_briefing"]["city"] == "Shanghai"
+    assert parsed["llm"]["provider"] == "ollama"
+    assert parsed["tts"]["provider"] == "cosyvoice"
+    assert parsed["tts"]["cosyvoice"]["ref_text_en"] == "hello there"
+
+    # And via the actual loader the daemon uses.
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(toml)
+    cfg = load_config(cfg_path)
+    assert cfg.behavior.humor_level == 2
+    assert cfg.behavior.session_briefing.city == "Shanghai"
+
+
+def test_render_configured_toml_clamps_implicit_humor_within_range(tmp_path: Path):
+    """Wizard returns 0-3, but if a config field drift happened we'd want
+    the loader's clamp to still bring us back into range. Belt + braces."""
+    from jarvis_cc.config import load_config
+
+    choices = WizardChoices(
+        humor_level=3, voice_language="auto", city="",
+        profile="say-only",
+    )
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(_render_configured_toml(choices))
+    cfg = load_config(cfg_path)
+    assert cfg.behavior.humor_level == 3
+    assert cfg.behavior.voice_language == "auto"
+
+
+def test_render_configured_toml_quotes_ref_text_en_with_apostrophes():
+    """Free-form preserved strings (transcripts) often contain quotes —
+    they must be JSON-encoded so the rendered TOML is parseable."""
+    choices = WizardChoices(
+        humor_level=1, voice_language="en", city="",
+        profile="local-zero-cost",
+    )
+    toml = _render_configured_toml(
+        choices,
+        preserve={"ref_text_en": "I'm \"Jarvis\", at your service."},
+    )
+    parsed = tomllib.loads(toml)
+    assert parsed["tts"]["cosyvoice"]["ref_text_en"] == 'I\'m "Jarvis", at your service.'

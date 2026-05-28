@@ -10,17 +10,41 @@ import json
 
 from ..types import Event, Lang
 
+# `{humor}` slot is filled per request from the user's humor_level (0-3).
+# Kept as a slot so we can A/B different phrasings without editing every
+# system-prompt site.
 _SYSTEM_BASE = (
     "You are J.A.R.V.I.S., Tony Stark's polite British AI butler. "
     "Address the user as '{addr}'. Given a Claude Code event, reply with ONE "
     "short sentence in {lang_name} that ALERTS the user AND names the salient "
     "thing they need to decide on. Aim for roughly {target_chars} characters; "
-    "you may go up to {hard_cap} if needed to keep the key detail. Be calm, "
-    "courteous, with a hint of dry wit. If a 'summary' field is provided, weave "
-    "its content into your sentence (quote a file name, the command verb, or "
-    "the pattern — whatever is most actionable). Do NOT explain. Do NOT add "
-    "quotes or labels around your output."
+    "you may go up to {hard_cap} if needed to keep the key detail. {humor} "
+    "If a 'summary' field is provided, weave its content into your sentence "
+    "(quote a file name, the command verb, or the pattern — whatever is most "
+    "actionable). Do NOT explain. Do NOT add quotes or labels around your output."
 )
+
+# Humor clauses, indexed by humor_level (0-3). Each is a single sentence
+# that drops into `{humor}` and shapes the whole reply's tone without
+# changing what gets said.
+_HUMOR_CLAUSES: tuple[str, ...] = (
+    # 0 — deadpan, formal, no wit
+    "Be calm, courteous, and entirely deadpan; no jokes, no asides.",
+    # 1 — current default: a hint of dry wit
+    "Be calm, courteous, with a hint of dry wit.",
+    # 2 — MCU Jarvis: banter-prone
+    "Be courteous with the dry, banter-prone wit of MCU Jarvis — small "
+    "wry asides are welcome when they fit.",
+    # 3 — Tony-mode: openly sardonic
+    "Be courteous but openly sardonic, in the manner of an old butler who "
+    "has seen this nonsense before — tease lightly when warranted, never "
+    "sycophantic.",
+)
+
+
+def _humor_clause(level: int) -> str:
+    """Pick a humor clause. Out-of-range levels clamp to the nearest end."""
+    return _HUMOR_CLAUSES[max(0, min(len(_HUMOR_CLAUSES) - 1, level))]
 
 _FEW_SHOT_ZH = [
     {"role": "user",
@@ -75,22 +99,28 @@ def build_messages(
     summary: str,
     target_chars: int,
     hard_cap: int,
+    humor_level: int = 1,
 ) -> list[dict[str, str]]:
     """Build OpenAI-compatible chat messages for an Event.
 
     `summary` is the already-extracted-and-redacted one-line digest of
     `event.tool_input`. The raw `tool_input` is NOT passed to the LLM.
+
+    `humor_level` (0-3) selects which wit clause goes into the system
+    prompt — see `_HUMOR_CLAUSES`. Defaults to 1 so callers that don't
+    yet thread the config field through still get sensible behavior.
     """
+    humor = _humor_clause(humor_level)
     if lang == "zh":
         sys = _SYSTEM_BASE.format(
             addr="先生", lang_name="中文",
-            target_chars=target_chars, hard_cap=hard_cap,
+            target_chars=target_chars, hard_cap=hard_cap, humor=humor,
         )
         few_shot = _FEW_SHOT_ZH
     else:
         sys = _SYSTEM_BASE.format(
             addr="Sir", lang_name="English",
-            target_chars=target_chars, hard_cap=hard_cap,
+            target_chars=target_chars, hard_cap=hard_cap, humor=humor,
         )
         few_shot = _FEW_SHOT_EN
 

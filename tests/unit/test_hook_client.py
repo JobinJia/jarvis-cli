@@ -361,23 +361,51 @@ def test_forward_event_codex_post_tool_use_emits_cancel(tmp_path: Path):
     assert row.get("command") == "cancel"
 
 
-def test_forward_event_codex_session_start_is_dropped(tmp_path: Path):
-    """SessionStart is informational only — neither product wants Jarvis
-    to speak on every session bring-up. Letting the payload through to
-    the daemon with no notification_type would have it filtered there,
-    but it's cleaner to drop at the hook."""
+def test_forward_event_session_start_startup_becomes_session_start_event(tmp_path: Path):
+    """A fresh CC/Codex `SessionStart` (source=startup) triggers the daemon's
+    new session_start event so the Iron-Man-style opening briefing speaks."""
     sock_path = tmp_path / "j.sock"
     received = _start_unix_echo_server(sock_path)
     payload = {
         "hook_event_name": "SessionStart",
-        "session_id": "sess",
+        "session_id": "sess-9",
         "source": "startup",
         "cwd": "/x",
     }
-    # Pass-through behavior: daemon filters on notification_type.
-    # Either drop here (False) or forward as-is and let the daemon ignore.
-    # We accept either, just assert it doesn't raise.
-    forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "session_start"
+    assert row["cwd"] == "/x"
+    assert row["session_id"] == "sess-9"
+    # Daemon composes the text itself from briefing.py — hook must not pre-bake.
+    assert "text" not in row
+    assert "lang" not in row
+
+
+def test_forward_event_session_start_resume_is_dropped(tmp_path: Path):
+    """SessionStart fires on /clear and resume too — we only want the
+    briefing on a genuine cold start, not whenever the user wipes context."""
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    for source in ("resume", "clear"):
+        payload = {
+            "hook_event_name": "SessionStart",
+            "session_id": "sess",
+            "source": source,
+            "cwd": "/x",
+        }
+        assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is False, source
+
+
+def test_forward_event_session_start_without_source_is_forwarded(tmp_path: Path):
+    """Some hook payloads omit `source`; treat that as a cold start so we
+    don't silently lose briefings from clients that don't populate the field."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {"hook_event_name": "SessionStart", "session_id": "sess", "cwd": "/x"}
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "session_start"
 
 
 def test_forward_event_codex_permission_request_with_cancel_disabled(tmp_path: Path):

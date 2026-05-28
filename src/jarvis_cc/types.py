@@ -9,6 +9,9 @@ NotificationType = Literal[
     "idle_prompt",
     "elicitation_dialog",
     "ask_user_question",
+    # New CC/Codex session — daemon composes a Jarvis briefing
+    # (greeting + local time + weather) instead of going via the LLM router.
+    "session_start",
 ]
 
 Lang = Literal["zh", "en"]

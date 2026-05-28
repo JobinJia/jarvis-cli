@@ -11,6 +11,9 @@ _ZH: dict[str, str] = {
     "idle_prompt": "先生，Claude 正在等候您的指示。",
     "elicitation_dialog": "先生，有个对话框等您填写。",
     "ask_user_question": "先生，有个选择题等您拍板。",
+    # session_start normally bypasses the LLM router and is composed by
+    # briefing.py; this template is only reached if that path errors out.
+    "session_start": "先生，欢迎回来。",
 }
 
 _EN: dict[str, str] = {
@@ -18,6 +21,7 @@ _EN: dict[str, str] = {
     "idle_prompt": "Sir, Claude awaits your guidance.",
     "elicitation_dialog": "Sir, a dialog awaits your input.",
     "ask_user_question": "Sir, a question awaits your decision.",
+    "session_start": "At your service, sir.",
 }
 
 
