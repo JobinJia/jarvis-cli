@@ -18,7 +18,7 @@ from .config import DEFAULT_CONFIG_PATH, load_config
 # CC's PreToolUse(AskUserQuestion) payload has no `notification_type` field
 # — the listener would drop it. We translate it here into a daemon event
 # whose `text` is pre-baked, so synthesis skips the LLM (the daemon already
-# special-cases `text=...` for the manual `jarvis-cc say --text` path).
+# special-cases `text=...` for the manual `jarvis-cli say --text` path).
 #
 # Output language is governed by `behavior.voice_language` ("en" | "zh" |
 # "auto"). Default is "en" — the user's chosen British voice identity.
@@ -257,7 +257,7 @@ def forward_event(
 
 
 def main() -> int:
-    """Entry point registered as `jarvis-cc-hook` console_script.
+    """Entry point registered as `jarvis-cli-hook` console_script.
 
     Must NEVER raise — Claude Code reads stdout for hook decisions and a
     traceback would corrupt that channel. All failures are silent and

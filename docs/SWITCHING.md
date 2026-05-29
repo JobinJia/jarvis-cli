@@ -1,7 +1,7 @@
 # Provider switching guide
 
-`jarvis-cc` decouples *what generates the line* (LLM) from *what speaks
-it* (TTS). Both sides are configured in `~/.jarvis-cc/config.toml` and
+`jarvis-cli` decouples *what generates the line* (LLM) from *what speaks
+it* (TTS). Both sides are configured in `~/.jarvis-cli/config.toml` and
 either can be swapped at runtime without touching code — restart the
 daemon, that's it.
 
@@ -29,15 +29,15 @@ universal safety net.
 All switches follow the same two-step recipe:
 
 ```bash
-# 1. Edit ~/.jarvis-cc/config.toml — change `provider` and/or `fallback`
-$EDITOR ~/.jarvis-cc/config.toml
+# 1. Edit ~/.jarvis-cli/config.toml — change `provider` and/or `fallback`
+$EDITOR ~/.jarvis-cli/config.toml
 
 # 2. Reload the daemon so it re-reads the file
-launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
-launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
+launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
+launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
 
 # Shortcut for the same:
-launchctl kickstart -k "gui/$(id -u)/com.jobin.jarvis-cc"
+launchctl kickstart -k "gui/$(id -u)/com.jobin.jarvis-cli"
 ```
 
 The daemon process picks up the change on the next event. The first
@@ -107,7 +107,7 @@ No network calls. `say` voice quality is robotic but works on every Mac.
 ### Trying a different voice without changing providers
 
 Drop a new mono 22050 Hz WAV at
-`~/.jarvis-cc/voices/jarvis_en.wav` (or `…_zh.wav`) — 10-30 s of
+`~/.jarvis-cli/voices/jarvis_en.wav` (or `…_zh.wav`) — 10-30 s of
 clean speech of the voice you want cloned. Update
 `[tts.cosyvoice] ref_text_en` to the transcript of that clip
 (use `uvx --from openai-whisper whisper jarvis_en.wav --model tiny`
@@ -119,25 +119,25 @@ No need to change `[tts] provider`. Just reload the daemon.
 
 ```bash
 # Is the daemon alive?
-uv run jarvis-cc status
+uv run jarvis-cli status
 # {"queue_size": 0, "queue_capacity": 5, "dropped": 0, "last_text": "..."}
 
 # Fire a real event end-to-end (LLM + TTS)
-uv run jarvis-cc test --event permission_prompt --tool Bash
+uv run jarvis-cli test --event permission_prompt --tool Bash
 
 # Manually speak verbatim text (bypasses the LLM; pure TTS round-trip)
-uv run jarvis-cc say --text "Sir, the system is now under XTTS."
+uv run jarvis-cli say --text "Sir, the system is now under XTTS."
 
 # Tail the daemon log to see which provider actually ran
-tail -f ~/.jarvis-cc/daemon.log
+tail -f ~/.jarvis-cli/daemon.log
 ```
 
 After a switch, the first synthesis line in the log identifies the
 loaded provider, e.g.:
 
 ```
-INFO  | jarvis_cc.tts.providers.xtts:_load_model:36 - Loading XTTS-v2 ...
-INFO  | jarvis_cc.tts.providers.cosyvoice:_load_model:43 - Loading CosyVoice3 ...
+INFO  | jarvis_cli.tts.providers.xtts:_load_model:36 - Loading XTTS-v2 ...
+INFO  | jarvis_cli.tts.providers.cosyvoice:_load_model:43 - Loading CosyVoice3 ...
 ```
 
 ## When to pick what

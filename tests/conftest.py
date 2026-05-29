@@ -1,4 +1,4 @@
-"""Test infrastructure for jarvis-cc.
+"""Test infrastructure for jarvis-cli.
 
 Pytest's default tmp_path lives under /private/var/folders/... on macOS,
 which exceeds AF_UNIX's 104-byte sun_path limit (Darwin) and breaks unix-
@@ -41,6 +41,6 @@ def pytest_configure(config: pytest.Config) -> None:
         return  # user passed --basetemp
     if os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         return  # user pre-set the env var
-    short_root = Path(tempfile.mkdtemp(prefix="jarvis-cc-", dir="/tmp")).resolve()
+    short_root = Path(tempfile.mkdtemp(prefix="jarvis-cli-", dir="/tmp")).resolve()
     _OWNED_TMP_ROOTS.append(short_root)
     os.environ["PYTEST_DEBUG_TEMPROOT"] = str(short_root)

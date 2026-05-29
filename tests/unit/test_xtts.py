@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cc.config import XTTSConfig
-from jarvis_cc.tts.providers.xtts import XTTSProvider
+from jarvis_cli.config import XTTSConfig
+from jarvis_cli.tts.providers.xtts import XTTSProvider
 
 
 @pytest.mark.asyncio

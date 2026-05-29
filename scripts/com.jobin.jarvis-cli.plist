@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- This is a reference template. The real plist is rendered by `jarvis-cc install`. -->
+<!-- This is a reference template. The real plist is rendered by `jarvis-cli install`. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.jobin.jarvis-cc</string>
+    <string>com.jobin.jarvis-cli</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/REPLACED/AT/INSTALL/jarvis-cc-daemon</string>
+        <string>/REPLACED/AT/INSTALL/jarvis-cli-daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

@@ -1,4 +1,4 @@
-from jarvis_cc.phrase.extract import extract
+from jarvis_cli.phrase.extract import extract
 
 
 def test_extract_empty_input_returns_empty():

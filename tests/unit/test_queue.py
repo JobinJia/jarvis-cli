@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from jarvis_cc.daemon.queue import BoundedEventQueue
-from jarvis_cc.types import Event
+from jarvis_cli.daemon.queue import BoundedEventQueue
+from jarvis_cli.types import Event
 
 
 def _ev(i: int) -> Event:

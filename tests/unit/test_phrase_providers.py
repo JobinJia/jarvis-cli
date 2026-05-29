@@ -2,9 +2,9 @@ import httpx
 import pytest
 import respx
 
-from jarvis_cc.config import DeepSeekConfig, OllamaConfig
-from jarvis_cc.phrase.providers.deepseek import DeepSeekProvider
-from jarvis_cc.phrase.providers.ollama import OllamaProvider
+from jarvis_cli.config import DeepSeekConfig, OllamaConfig
+from jarvis_cli.phrase.providers.deepseek import DeepSeekProvider
+from jarvis_cli.phrase.providers.ollama import OllamaProvider
 
 _MESSAGES = [
     {"role": "system", "content": "you are jarvis"},

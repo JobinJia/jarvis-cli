@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cc.tts.providers.say import SayProvider
+from jarvis_cli.tts.providers.say import SayProvider
 
 
 def _fake_say_factory(out_path: Path, payload: bytes = b"FAKE-AUDIO"):
@@ -33,7 +33,7 @@ async def test_say_writes_to_aiff_path(tmp_path: Path):
     p = SayProvider()
     out_path = tmp_path / "out.aiff"
     fake, _ = _fake_say_factory(out_path)
-    with patch("jarvis_cc.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
+    with patch("jarvis_cli.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
         audio = await p.synthesize("hello sir", lang="en", out_path=out_path)
     assert audio == out_path
     assert audio.read_bytes() == b"FAKE-AUDIO"
@@ -48,7 +48,7 @@ async def test_say_passes_data_format_for_wav_path(tmp_path: Path):
     p = SayProvider()
     out_path = tmp_path / "out.wav"
     fake, captured = _fake_say_factory(out_path)
-    with patch("jarvis_cc.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
+    with patch("jarvis_cli.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
         await p.synthesize("hello sir", lang="en", out_path=out_path)
     argv = captured["argv"]
     assert any(
@@ -62,7 +62,7 @@ async def test_say_omits_data_format_for_aiff_path(tmp_path: Path):
     p = SayProvider()
     out_path = tmp_path / "out.aiff"
     fake, captured = _fake_say_factory(out_path)
-    with patch("jarvis_cc.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
+    with patch("jarvis_cli.tts.providers.say.asyncio.create_subprocess_exec", side_effect=fake):
         await p.synthesize("hello sir", lang="en", out_path=out_path)
     argv = captured["argv"]
     assert not any(

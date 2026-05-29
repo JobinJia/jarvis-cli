@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cc.player import play
+from jarvis_cli.player import play
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_play_invokes_afplay_with_path(tmp_path: Path):
 
         return _P()
 
-    with patch("jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         await play(audio)
 
     assert calls[0] == ("afplay", str(audio))
@@ -36,7 +36,7 @@ async def test_play_invokes_afplay_with_path(tmp_path: Path):
 async def test_play_stream_pipes_chunks_to_ffplay():
     """play_stream(chunks) spawns ffplay reading from stdin and feeds each
     chunk as it arrives — first audio plays before the iterator finishes."""
-    from jarvis_cc.player import play_stream
+    from jarvis_cli.player import play_stream
 
     written: list[bytes] = []
     closed = {"value": False}
@@ -76,7 +76,7 @@ async def test_play_stream_pipes_chunks_to_ffplay():
         yield b"chunk-B"
 
     with patch(
-        "jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         await play_stream(_chunks())
 
@@ -92,7 +92,7 @@ async def test_play_stream_pipes_chunks_to_ffplay():
 
 @pytest.mark.asyncio
 async def test_play_stream_raises_when_ffplay_fails():
-    from jarvis_cc.player import play_stream
+    from jarvis_cli.player import play_stream
 
     async def _fake_exec(*args, **kwargs):
         class _Stdin:
@@ -124,7 +124,7 @@ async def test_play_stream_raises_when_ffplay_fails():
         yield b"x"
 
     with patch(
-        "jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         with pytest.raises(RuntimeError):
             await play_stream(_chunks())
@@ -148,7 +148,7 @@ async def test_play_invokes_on_spawn_with_proc(tmp_path: Path):
     async def _fake_exec(*args, **kwargs):
         return _P()
 
-    with patch("jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         await play(audio, on_spawn=seen.append)
 
     assert len(seen) == 1
@@ -157,7 +157,7 @@ async def test_play_invokes_on_spawn_with_proc(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_play_stream_invokes_on_spawn_with_proc():
-    from jarvis_cc.player import play_stream
+    from jarvis_cli.player import play_stream
     seen = []
 
     class _Stdin:
@@ -180,7 +180,7 @@ async def test_play_stream_invokes_on_spawn_with_proc():
         yield b"x"
 
     with patch(
-        "jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         await play_stream(_chunks(), on_spawn=seen.append)
 
@@ -205,6 +205,6 @@ async def test_play_raises_when_afplay_fails(tmp_path: Path):
 
         return _P()
 
-    with patch("jarvis_cc.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         with pytest.raises(RuntimeError):
             await play(audio)

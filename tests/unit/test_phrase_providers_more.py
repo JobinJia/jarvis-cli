@@ -1,9 +1,9 @@
 import pytest
 import respx
 
-from jarvis_cc.config import AnthropicConfig, OpenAIConfig
-from jarvis_cc.phrase.providers.anthropic import AnthropicProvider
-from jarvis_cc.phrase.providers.openai import OpenAIProvider
+from jarvis_cli.config import AnthropicConfig, OpenAIConfig
+from jarvis_cli.phrase.providers.anthropic import AnthropicProvider
+from jarvis_cli.phrase.providers.openai import OpenAIProvider
 
 _MESSAGES = [
     {"role": "system", "content": "you are jarvis"},

@@ -290,7 +290,7 @@ class Daemon:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="jarvis-cc-daemon")
+    parser = argparse.ArgumentParser(prog="jarvis-cli-daemon")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--health-port", type=int, default=9527)
     args = parser.parse_args()

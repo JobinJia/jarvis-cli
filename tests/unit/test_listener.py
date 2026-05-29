@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_cc.daemon.listener import parse_payload, serve_unix_socket
-from jarvis_cc.types import Event
+from jarvis_cli.daemon.listener import parse_payload, serve_unix_socket
+from jarvis_cli.types import Event
 
 
 def test_parse_payload_maps_known_fields():

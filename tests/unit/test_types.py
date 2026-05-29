@@ -1,4 +1,4 @@
-from jarvis_cc.types import Event
+from jarvis_cli.types import Event
 
 
 def test_dedup_key_combines_cwd_type_tool():

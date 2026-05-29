@@ -1,5 +1,5 @@
-from jarvis_cc.phrase.prompt import build_messages
-from jarvis_cc.types import Event
+from jarvis_cli.phrase.prompt import build_messages
+from jarvis_cli.types import Event
 
 
 def _ev(**kw) -> Event:

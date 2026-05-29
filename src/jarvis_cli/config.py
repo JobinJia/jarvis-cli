@@ -48,9 +48,9 @@ class LLMConfig:
 
 @dataclass
 class XTTSConfig:
-    model_dir: str = "~/.jarvis-cc/models/xtts-v2"
-    ref_audio_zh: str = "~/.jarvis-cc/voices/jarvis_zh.wav"
-    ref_audio_en: str = "~/.jarvis-cc/voices/jarvis_en.wav"
+    model_dir: str = "~/.jarvis-cli/models/xtts-v2"
+    ref_audio_zh: str = "~/.jarvis-cli/voices/jarvis_zh.wav"
+    ref_audio_en: str = "~/.jarvis-cli/voices/jarvis_en.wav"
     device: str = "mps"
     # XTTS GPT decoder sampling temperature. Library default 0.75 is too
     # high for our use case — short Jarvis-toned commands suffer audible
@@ -83,9 +83,9 @@ class CosyVoiceConfig:
     Quality outperforms XTTS-v2 on speaker similarity in our A/B; the
     permissive license also clears the OSS path that XTTS's CPML blocks.
     """
-    model_dir: str = "~/.jarvis-cc/models/cosyvoice3-0.5b-candle"
-    ref_audio_zh: str = "~/.jarvis-cc/voices/jarvis_zh.wav"
-    ref_audio_en: str = "~/.jarvis-cc/voices/jarvis_en.wav"
+    model_dir: str = "~/.jarvis-cli/models/cosyvoice3-0.5b-candle"
+    ref_audio_zh: str = "~/.jarvis-cli/voices/jarvis_zh.wav"
+    ref_audio_en: str = "~/.jarvis-cli/voices/jarvis_en.wav"
     # Transcript of each ref audio. When provided, the provider routes
     # through inference_zero_shot (which uses the transcript to ground the
     # LLM and prevent the double-take loop that cross_lingual mode falls
@@ -174,9 +174,9 @@ class BehaviorConfig:
 
 @dataclass
 class PathsConfig:
-    socket: str = "~/.jarvis-cc/jarvis.sock"
-    log: str = "~/.jarvis-cc/daemon.log"
-    missed_log: str = "~/.jarvis-cc/missed.log"
+    socket: str = "~/.jarvis-cli/jarvis.sock"
+    log: str = "~/.jarvis-cli/daemon.log"
+    missed_log: str = "~/.jarvis-cli/missed.log"
 
 
 @dataclass
@@ -230,4 +230,4 @@ def load_config(path: str | Path) -> Config:
     return cfg
 
 
-DEFAULT_CONFIG_PATH = expanduser("~/.jarvis-cc/config.toml")
+DEFAULT_CONFIG_PATH = expanduser("~/.jarvis-cli/config.toml")

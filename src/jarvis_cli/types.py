@@ -30,7 +30,7 @@ class Event:
     received_at: float = 0.0  # epoch seconds; filled by listener
     # Pre-baked text from the caller. When set the daemon SKIPS the phrase
     # router (no LLM round-trip) and synthesizes this string verbatim. Used
-    # by `jarvis-cc say --text` for assistant-side scenarios CC doesn't cover.
+    # by `jarvis-cli say --text` for assistant-side scenarios CC doesn't cover.
     text: str | None = None
     lang: Lang | None = None  # only honored when `text` is set
     voice_id: str | None = None  # per-event TTS voice override (eg EL voice_id)

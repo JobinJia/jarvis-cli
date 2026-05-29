@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_cc.config import load_config
+from jarvis_cli.config import load_config
 
 
 def test_humor_level_clamps_out_of_range_values(tmp_path: Path):

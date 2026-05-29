@@ -1,5 +1,5 @@
 [project]
-name = "jarvis-cc"
+name = "jarvis-cli"
 version = "0.2.0"
 description = "Jarvis-voiced notification layer for Claude Code"
 requires-python = ">=3.11"
@@ -35,16 +35,16 @@ cosyvoice = [
 ]
 
 [project.scripts]
-jarvis-cc = "jarvis_cc.install:main"
-jarvis-cc-hook = "jarvis_cc.hook_client:main"
-jarvis-cc-daemon = "jarvis_cc.daemon.main:main"
+jarvis-cli = "jarvis_cli.install:main"
+jarvis-cli-hook = "jarvis_cli.hook_client:main"
+jarvis-cli-daemon = "jarvis_cli.daemon.main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jarvis_cc"]
+packages = ["src/jarvis_cli"]
 
 [tool.hatch.metadata]
 # Required for the `cosyvoice` extra to declare its wheel via a direct URL

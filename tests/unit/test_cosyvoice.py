@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cc.config import CosyVoiceConfig
-from jarvis_cc.tts.providers.cosyvoice import CosyVoiceProvider
+from jarvis_cli.config import CosyVoiceConfig
+from jarvis_cli.tts.providers.cosyvoice import CosyVoiceProvider
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_cosyvoice_caps_retry_attempts(tmp_path: Path):
             lang="en", out_path=tmp_path / "out.wav",
         )
     # Capped at _MAX_SYNTH_ATTEMPTS (3) — no infinite loop.
-    from jarvis_cc.tts.providers.cosyvoice import _MAX_SYNTH_ATTEMPTS
+    from jarvis_cli.tts.providers.cosyvoice import _MAX_SYNTH_ATTEMPTS
     assert fake_model.inference_zero_shot.call_count == _MAX_SYNTH_ATTEMPTS
 
 

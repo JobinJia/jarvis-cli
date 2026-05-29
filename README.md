@@ -1,4 +1,4 @@
-# jarvis-cc
+# jarvis-cli
 
 A Jarvis-voiced notification layer for [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex).
 
@@ -19,12 +19,12 @@ The default stack is **fully local, zero-cost**: Ollama for phrasing, CosyVoice 
 Claude Code ──Notification / PreToolUse hooks──┐
             └ UserPromptSubmit / PostToolUse ──┤
                                                │
-Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cc-hook (one-shot, <10ms)
+Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cli-hook (one-shot, <10ms)
             └ UserPromptSubmit / PostToolUse ──┤
             └ notify (agent-turn-complete) ────┘
                                                 │
                                                 ▼ Unix socket
-                                    jarvis-cc-daemon (launchd, KeepAlive)
+                                    jarvis-cli-daemon (launchd, KeepAlive)
                                                 │
                           ┌─────────────────────┴─────────────────────┐
                           ▼                                           ▼
@@ -66,8 +66,8 @@ swapping providers afterwards.
 ## Install
 
 ```bash
-git clone https://github.com/JobinJia/jarvis-cc.git
-cd jarvis-cc
+git clone https://github.com/JobinJia/jarvis-cli.git
+cd jarvis-cli
 
 # Pick the TTS path you want; extras are additive.
 uv sync --extra cosyvoice          # recommended
@@ -91,15 +91,15 @@ If you're going **fully local** (Ollama + CosyVoice + `say` fallback), no API ke
 Then:
 
 ```bash
-uv run jarvis-cc install
+uv run jarvis-cli install
 ```
 
 This will:
 
-1. Create `~/.jarvis-cc/{voices,models,logs}/`.
-2. Write a default `~/.jarvis-cc/config.toml` if absent.
-3. Patch `~/.claude/settings.json` to register `Notification`, `PreToolUse`, `UserPromptSubmit`, and `PostToolUse` hooks pointing at the absolute path of `jarvis-cc-hook` in the project venv. If `~/.codex/` exists, also patch `~/.codex/config.toml` with the equivalent Codex lifecycle hooks plus `notify` (sentinel-fenced block, idempotent; see [`docs/CODEX.md`](docs/CODEX.md)).
-4. Write `~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` with your API keys embedded. CosyVoice users need `COQUI_TOS_AGREED=1` only if they also enabled the XTTS path (XTTS uses Coqui-TTS internally).
+1. Create `~/.jarvis-cli/{voices,models,logs}/`.
+2. Write a default `~/.jarvis-cli/config.toml` if absent.
+3. Patch `~/.claude/settings.json` to register `Notification`, `PreToolUse`, `UserPromptSubmit`, and `PostToolUse` hooks pointing at the absolute path of `jarvis-cli-hook` in the project venv. If `~/.codex/` exists, also patch `~/.codex/config.toml` with the equivalent Codex lifecycle hooks plus `notify` (sentinel-fenced block, idempotent; see [`docs/CODEX.md`](docs/CODEX.md)).
+4. Write `~/Library/LaunchAgents/com.jobin.jarvis-cli.plist` with your API keys embedded. CosyVoice users need `COQUI_TOS_AGREED=1` only if they also enabled the XTTS path (XTTS uses Coqui-TTS internally).
 5. `launchctl load` the plist — daemon starts immediately and on every login.
 
 ### TTS model setup
@@ -109,11 +109,11 @@ This will:
 ```bash
 # Download Candle-format weights (~4.7GB on disk)
 uv run hf download spensercai/CosyVoice3-0.5B-Candle \
-  --local-dir ~/.jarvis-cc/models/cosyvoice3-0.5b-candle
+  --local-dir ~/.jarvis-cli/models/cosyvoice3-0.5b-candle
 
 # Provide an English reference clip — 10-30s of clean speech of the voice
 # you want cloned (e.g. trimmed from a podcast or interview).
-# Save to ~/.jarvis-cc/voices/jarvis_en.wav (mono WAV, ~22050Hz preferred).
+# Save to ~/.jarvis-cli/voices/jarvis_en.wav (mono WAV, ~22050Hz preferred).
 ```
 
 Add the transcript of that reference clip to `[tts.cosyvoice] ref_text_en` in
@@ -129,14 +129,14 @@ which audibly doubles short utterances.
 
 Now **restart any running Claude Code or Codex CLI sessions** so they pick up the patched config files.
 
-> **Upgrading from an older install?** Re-run `uv run jarvis-cc install` to
+> **Upgrading from an older install?** Re-run `uv run jarvis-cli install` to
 > register the new `UserPromptSubmit` and `PostToolUse` hooks that drive
 > the "stop voice when I respond" behavior.
 
 ## Verify
 
 ```bash
-uv run jarvis-cc status
+uv run jarvis-cli status
 # {
 #   "queue_size": 0,
 #   "queue_capacity": 5,
@@ -148,7 +148,7 @@ uv run jarvis-cc status
 Fire a synthetic event and listen:
 
 ```bash
-uv run jarvis-cc test --event permission_prompt --tool Bash
+uv run jarvis-cli test --event permission_prompt --tool Bash
 # you should hear a sentence within ~5-15 seconds the first time
 # (model load), and ~3-5s on every call after that
 ```
@@ -164,7 +164,7 @@ Trigger the real hook end-to-end:
 
 ## Configuration
 
-Everything lives in `~/.jarvis-cc/config.toml`. The defaults you get after `install`:
+Everything lives in `~/.jarvis-cli/config.toml`. The defaults you get after `install`:
 
 ```toml
 [llm]
@@ -185,16 +185,16 @@ provider = "cosyvoice"         # Apache-2.0 local voice clone
 fallback = "say"               # macOS built-in, universal safety net
 
 [tts.cosyvoice]
-model_dir   = "~/.jarvis-cc/models/cosyvoice3-0.5b-candle"
-ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
-ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+model_dir   = "~/.jarvis-cli/models/cosyvoice3-0.5b-candle"
+ref_audio_zh = "~/.jarvis-cli/voices/jarvis_zh.wav"
+ref_audio_en = "~/.jarvis-cli/voices/jarvis_en.wav"
 ref_text_en = ""               # transcript of ref_audio_en — strongly recommended
 n_timesteps = 10               # CFM sampling steps (10 = library default)
 
 [tts.xtts]                     # used only if [tts] provider = "xtts"
-model_dir   = "~/.jarvis-cc/models/xtts-v2"
-ref_audio_zh = "~/.jarvis-cc/voices/jarvis_zh.wav"
-ref_audio_en = "~/.jarvis-cc/voices/jarvis_en.wav"
+model_dir   = "~/.jarvis-cli/models/xtts-v2"
+ref_audio_zh = "~/.jarvis-cli/voices/jarvis_zh.wav"
+ref_audio_en = "~/.jarvis-cli/voices/jarvis_en.wav"
 device = "mps"                 # mps | cpu
 temperature = 0.5              # < 0.75 default → stable pacing across takes
 speed_short = 1.30             # < 60 chars: nudge faster (XTTS slows short lines)
@@ -222,8 +222,8 @@ cloud_redaction = true         # scrub HOME path + secret-shaped tokens before s
 After editing, reload the daemon to pick up changes:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
-launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist
+launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
+launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
 ```
 
 ### Recommended profile (zero-cost, OSS-friendly)
@@ -275,30 +275,30 @@ No network calls of any kind. Voice quality drops; this is your true offline flo
 
 | Action | Command |
 |---|---|
-| Check daemon health | `uv run jarvis-cc status` |
-| Fire a synthetic event | `uv run jarvis-cc test --event permission_prompt --tool Bash` |
-| Manually trigger Jarvis (LLM phrases it) | `uv run jarvis-cc say --reason user-input-requested` |
-| Manually trigger Jarvis (read exact text) | `uv run jarvis-cc say --text "Sir, shall we proceed?"` |
-| Tail daemon logs | `tail -f ~/.jarvis-cc/daemon.log` |
-| Reload daemon | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cc.plist` |
-| Update API keys in plist | re-run `uv run jarvis-cc install` (idempotent) |
-| Uninstall (keep data) | `uv run jarvis-cc uninstall` |
-| Uninstall (wipe data) | `uv run jarvis-cc uninstall --purge` |
+| Check daemon health | `uv run jarvis-cli status` |
+| Fire a synthetic event | `uv run jarvis-cli test --event permission_prompt --tool Bash` |
+| Manually trigger Jarvis (LLM phrases it) | `uv run jarvis-cli say --reason user-input-requested` |
+| Manually trigger Jarvis (read exact text) | `uv run jarvis-cli say --text "Sir, shall we proceed?"` |
+| Tail daemon logs | `tail -f ~/.jarvis-cli/daemon.log` |
+| Reload daemon | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist` |
+| Update API keys in plist | re-run `uv run jarvis-cli install` (idempotent) |
+| Uninstall (keep data) | `uv run jarvis-cli uninstall` |
+| Uninstall (wipe data) | `uv run jarvis-cli uninstall --purge` |
 
 ## Troubleshooting
 
 **No sound at all.**
 
-- `uv run jarvis-cc status` — daemon reachable?
+- `uv run jarvis-cli status` — daemon reachable?
 - `launchctl list | grep jarvis` — service running?
-- `tail ~/.jarvis-cc/daemon.log` — error lines?
+- `tail ~/.jarvis-cli/daemon.log` — error lines?
 - Test the leaf: `say "test"` — speakers working?
 
 **Daemon up but `last_text` never changes.** The hook isn't reaching the socket. Common causes:
 
-- You added API keys **after** installing — re-run `jarvis-cc install` to re-bake them into the plist, then reload the daemon.
+- You added API keys **after** installing — re-run `jarvis-cli install` to re-bake them into the plist, then reload the daemon.
 - Your Claude Code session was running **before** install — restart CC so it re-reads `~/.claude/settings.json`.
-- `cat ~/.claude/settings.json | jq '.hooks.Notification'` should show the absolute path to `.venv/bin/jarvis-cc-hook`. If it shows a bare `jarvis-cc-hook`, re-run install.
+- `cat ~/.claude/settings.json | jq '.hooks.Notification'` should show the absolute path to `.venv/bin/jarvis-cli-hook`. If it shows a bare `jarvis-cli-hook`, re-run install.
 
 **You hear "Sir, the local language model … appears unreachable. I am falling back to the cloud."** Ollama either isn't running, the model isn't pulled, or the request timed out. Start `ollama serve`, confirm `ollama list` includes the model from `config.toml`, and try `curl http://localhost:11434/api/tags`. The alert is throttled to once every five minutes during a sustained outage.
 
@@ -321,14 +321,14 @@ Claude Code only fires its Notification hook for tool-permission prompts, idle w
 **LLM phrases it** — give the model a context label, let it write the line:
 
 ```bash
-uv run jarvis-cc say --reason "user-input-requested"
+uv run jarvis-cli say --reason "user-input-requested"
 # heard: "Sir, your input is awaited."
 ```
 
 **Speak this exact text** — bypass the LLM entirely (faster, predictable, ideal for reading out the actual question):
 
 ```bash
-uv run jarvis-cc say --text "Sir, shall this repository be made public or private?"
+uv run jarvis-cli say --text "Sir, shall this repository be made public or private?"
 # heard: <verbatim>
 # default --lang en; use --lang zh to switch voice/pronunciation
 ```
@@ -336,7 +336,7 @@ uv run jarvis-cc say --text "Sir, shall this repository be made public or privat
 **Override the voice for one call** — useful for A/B-testing candidate voices without editing config:
 
 ```bash
-uv run jarvis-cc say \
+uv run jarvis-cli say \
   --text "Sir, sample line for voice tasting." \
   --voice onwK4e9ZLuTAKqWW03F9        # Daniel, a deeper British male
 # next `say` without --voice goes back to the config-default voice
@@ -349,7 +349,7 @@ All modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `
 ## Project layout
 
 ```
-src/jarvis_cc/
+src/jarvis_cli/
 ├── hook_client.py        # one-shot stdin → socket bridge
 ├── daemon/
 │   ├── main.py           # asyncio entrypoint

@@ -3,8 +3,8 @@ from typing import Literal
 
 import pytest
 
-from jarvis_cc.tts.engine import TTSEngine
-from jarvis_cc.tts.providers.base import TTSProvider
+from jarvis_cli.tts.engine import TTSEngine
+from jarvis_cli.tts.providers.base import TTSProvider
 
 
 class _StubTTS(TTSProvider):

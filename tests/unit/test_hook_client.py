@@ -4,7 +4,7 @@ import socket
 import threading
 from pathlib import Path
 
-from jarvis_cc.hook_client import forward_event
+from jarvis_cli.hook_client import forward_event
 
 
 def _start_unix_echo_server(path: Path) -> list[bytes]:
