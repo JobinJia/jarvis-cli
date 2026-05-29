@@ -134,16 +134,29 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
         # Only the genuine cold start should speak. CC also sends this
         # event on `/clear` and resumed sessions; those shouldn't blast
         # the user with a fresh briefing every time. `source` is one of
-        # "startup", "resume", "clear" — both clients use the same field.
+        # "startup", "resume", "clear", "compact" — both clients use the
+        # same field.
         source = payload.get("source")
         if source and source != "startup":
             return None
+        # Deliberately drop the session_id. SessionStart is immediately
+        # followed by the user's first UserPromptSubmit (in `codex exec` the
+        # prompt is supplied up front; in the interactive TUI the user types
+        # within the briefing's 10-40s Ollama compose window), which carries
+        # the SAME session_id and translates to a `cancel`. With the id
+        # attached, that cancel drops the still-composing briefing from the
+        # daemon queue (or flags it so the worker skips synth) and the user
+        # hears nothing. The briefing is a fire-once greeting, not an
+        # "awaiting your input" prompt, so it has no business sharing the
+        # session's cancel identity — leaving session_id unset makes it
+        # immune to the cancel and it always speaks. dedup_key is (cwd, type,
+        # tool) so multi-tab dedup is unaffected.
         return {
             "notification_type": "session_start",
             "tool_name": None,
             "tool_input": {},
             "cwd": payload.get("cwd"),
-            "session_id": payload.get("session_id"),
+            "session_id": None,
         }
     if hook_event in ("UserPromptSubmit", "PostToolUse"):
         sid = payload.get("session_id")

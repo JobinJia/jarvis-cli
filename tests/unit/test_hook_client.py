@@ -376,10 +376,57 @@ def test_forward_event_session_start_startup_becomes_session_start_event(tmp_pat
     row = _recv_one(received)
     assert row["notification_type"] == "session_start"
     assert row["cwd"] == "/x"
-    assert row["session_id"] == "sess-9"
+    # The briefing is deliberately decoupled from the session's cancel identity:
+    # SessionStart is immediately followed by the user's first UserPromptSubmit
+    # (a `cancel` for the same session_id), which would otherwise drop the
+    # still-composing briefing. Carrying no session_id makes the briefing
+    # immune to that cancel so it always speaks. See the regression test below.
+    assert row["session_id"] is None
     # Daemon composes the text itself from briefing.py — hook must not pre-bake.
     assert "text" not in row
     assert "lang" not in row
+
+
+def test_session_start_not_cancelled_by_first_user_prompt(tmp_path: Path):
+    """Regression: in Codex (and CC) the user's first prompt fires
+    UserPromptSubmit at almost the same instant SessionStart fires, carrying
+    the same session_id. UserPromptSubmit translates to a `cancel`; the
+    briefing composes via Ollama for 10-40s, so the cancel reliably drops the
+    queued/in-flight briefing and the user hears nothing. The fix: the
+    briefing event must not share the session's cancel identity, so the
+    `cancel` (keyed on the real session_id) can never match it."""
+    sid = "019e725d-codex"
+    start = {
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+        "session_id": sid,
+        "cwd": "/tmp/proj",
+    }
+    prompt = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": sid,
+        "cwd": "/tmp/proj",
+        "prompt": "do the thing",
+    }
+
+    sock1 = tmp_path / "a.sock"
+    rcv1 = _start_unix_echo_server(sock1)
+    assert forward_event(io.StringIO(json.dumps(start)), sock1) is True
+    briefing = _recv_one(rcv1)
+
+    sock2 = tmp_path / "b.sock"
+    rcv2 = _start_unix_echo_server(sock2)
+    assert forward_event(io.StringIO(json.dumps(prompt)), sock2) is True
+    cancel = _recv_one(rcv2)
+
+    assert briefing["notification_type"] == "session_start"
+    assert cancel["command"] == "cancel"
+    assert cancel["session_id"] == sid
+    # The cancel targets `sid`; the briefing carries no session_id, so the
+    # daemon's `cancel_session(sid)` drop/kill (matched by session_id) can
+    # never touch the briefing.
+    assert briefing["session_id"] != sid
+    assert briefing["session_id"] is None
 
 
 def test_forward_event_session_start_resume_is_dropped(tmp_path: Path):
