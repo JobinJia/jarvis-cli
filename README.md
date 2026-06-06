@@ -375,7 +375,7 @@ Further reading lives under [`docs/`](docs/):
 - [`docs/CODEX.md`](docs/CODEX.md) — Codex CLI event mapping, auto-patch internals, verification recipe.
 - [`docs/SWITCHING.md`](docs/SWITCHING.md) — provider/profile swap recipes (XTTS ⇄ CosyVoice ⇄ ElevenLabs ⇄ `say`).
 
-230+ unit + integration tests under `tests/`. Run with `uv run pytest`.
+236+ unit + integration tests under `tests/`. Run with `uv run pytest`.
 
 ## License
 
