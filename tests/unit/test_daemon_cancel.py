@@ -121,6 +121,77 @@ async def test_try_stream_returns_false_on_real_tts_failure():
 
 
 @pytest.mark.asyncio
+async def test_worker_skips_play_when_cancelled_during_synth():
+    """The reported gap: a non-streaming provider (CosyVoice) synthesizes to a
+    file — several seconds — with no play proc yet registered. If the user acts
+    mid-synth, the cancel kills nothing, and the stale line plays a step late.
+    `_process_one` must re-check after synth and drop before `play`."""
+    d = Daemon(Config())
+    d.tts.primary = MagicMock()
+    d.tts.primary.supports_streaming = False  # forces the synth+play fallback
+
+    ev = Event(
+        notification_type="permission_prompt",
+        tool_name="T", session_id="abc", text="hi", lang="en",
+    )
+
+    async def _synth(text, lang, out_path, voice_id=None):
+        out_path.write_bytes(b"")  # pretend a file was produced
+        d._cancelled_sessions.add("abc")  # user acts mid-synthesis
+
+    d.tts.synthesize = _synth
+
+    from unittest.mock import patch
+
+    play_calls = 0
+
+    async def _fake_play(audio, *, on_spawn=None):
+        nonlocal play_calls
+        play_calls += 1
+
+    with patch("jarvis_cli.daemon.main.play", side_effect=_fake_play):
+        await d._process_one(ev)
+
+    assert play_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_skips_stream_when_cancelled_during_phrasing():
+    """A streaming provider's phrasing/LLM step can also outlast the user. If a
+    cancel lands during phrasing — before playback begins — `_process_one` must
+    not even start the stream."""
+    d = Daemon(Config())
+    d.tts.primary = MagicMock()
+    d.tts.primary.supports_streaming = True
+
+    # Un-prebaked event so the worker takes the phrasing branch we hook into.
+    ev = Event(
+        notification_type="permission_prompt",
+        tool_name="T", session_id="abc",
+    )
+
+    async def _phrase(event, *, lang):
+        d._cancelled_sessions.add("abc")  # user acts during phrasing
+        return "hello"
+
+    d.router.phrase = _phrase
+
+    from unittest.mock import patch
+
+    stream_calls = 0
+
+    async def _guarded_try_stream(*args, **kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        return True
+
+    with patch.object(d, "_try_stream", side_effect=_guarded_try_stream):
+        await d._process_one(ev)
+
+    assert stream_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_cancel_session_handles_process_lookup_error():
     d = Daemon(Config())
 

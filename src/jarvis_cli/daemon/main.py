@@ -172,73 +172,95 @@ class Daemon:
     async def _worker(self) -> None:
         while True:
             event = await self.queue.get()
-            sid = event.session_id
-            if sid and sid in self._cancelled_sessions:
-                # Stale cancel signal preceded the event; clear and play normally.
-                self._cancelled_sessions.discard(sid)
+            await self._process_one(event)
 
-            def _register(proc: asyncio.subprocess.Process) -> None:
-                self._current_proc = proc
-                self._current_session_id = sid
+    async def _process_one(self, event: Event) -> None:
+        sid = event.session_id
+        if sid and sid in self._cancelled_sessions:
+            # Stale cancel signal preceded the event; clear and play normally.
+            self._cancelled_sessions.discard(sid)
 
-            try:
-                if event.text is not None:
-                    # Caller pre-baked the phrase; skip the LLM entirely.
-                    text = event.text
-                    lang = event.lang or "en"
-                elif event.notification_type == "session_start":
-                    # Compose Jarvis briefing inline. We hand the primary
-                    # phrase provider (Ollama by default) in so the line is
-                    # freshly phrased each session — falls back to a
-                    # rotating template if the LLM is unreachable. Weather
-                    # fetch is best-effort with a TTL cache.
-                    text, lang = await compose_briefing(
-                        self.cfg.behavior.session_briefing,
-                        cache=self._weather_cache,
-                        llm=self.router.primary,
-                        humor_level=self.cfg.behavior.humor_level,
-                    )
-                else:
-                    lang = (
-                        detect_for(event.cwd)
-                        if self.cfg.behavior.voice_language == "auto"
-                        else self.cfg.behavior.voice_language  # type: ignore[assignment]
-                    )
-                    text = await self.router.phrase(event, lang=lang)
-                self._last_text = text
-                logger.debug(
-                    "PLAY type={} sid={} text={!r}",
-                    event.notification_type, sid, text[:80],
+        def _register(proc: asyncio.subprocess.Process) -> None:
+            self._current_proc = proc
+            self._current_session_id = sid
+
+        try:
+            if event.text is not None:
+                # Caller pre-baked the phrase; skip the LLM entirely.
+                text = event.text
+                lang = event.lang or "en"
+            elif event.notification_type == "session_start":
+                # Compose Jarvis briefing inline. We hand the primary
+                # phrase provider (Ollama by default) in so the line is
+                # freshly phrased each session — falls back to a
+                # rotating template if the LLM is unreachable. Weather
+                # fetch is best-effort with a TTL cache.
+                text, lang = await compose_briefing(
+                    self.cfg.behavior.session_briefing,
+                    cache=self._weather_cache,
+                    llm=self.router.primary,
+                    humor_level=self.cfg.behavior.humor_level,
                 )
-                if await self._try_stream(
-                    text, lang, event.voice_id,
-                    on_spawn=_register, session_id=sid,
-                ):
-                    continue
-                # Skip synth fallback if a cancel arrived between stream attempt
-                # and now — otherwise the same line gets re-synthesized + replayed.
-                if sid and sid in self._cancelled_sessions:
-                    continue
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    out_path = Path(tmp.name)
-                await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
+            else:
+                lang = (
+                    detect_for(event.cwd)
+                    if self.cfg.behavior.voice_language == "auto"
+                    else self.cfg.behavior.voice_language  # type: ignore[assignment]
+                )
+                text = await self.router.phrase(event, lang=lang)
+            self._last_text = text
+            # Phrasing/briefing above can take seconds (LLM round-trip). If the
+            # user already acted on this session in that window, the line is
+            # stale — drop it before any play proc starts rather than speak a
+            # step too late. No proc is registered yet, so the cancel that just
+            # landed had nothing to kill; this guard is what honours it.
+            if sid and sid in self._cancelled_sessions:
+                logger.debug("DROP cancelled-before-play sid={}", sid)
+                return
+            logger.debug(
+                "PLAY type={} sid={} text={!r}",
+                event.notification_type, sid, text[:80],
+            )
+            if await self._try_stream(
+                text, lang, event.voice_id,
+                on_spawn=_register, session_id=sid,
+            ):
+                return
+            # Skip synth fallback if a cancel arrived between stream attempt
+            # and now — otherwise the same line gets re-synthesized + replayed.
+            if sid and sid in self._cancelled_sessions:
+                return
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                out_path = Path(tmp.name)
+            await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
+            # synthesize() is the long pole for non-streaming providers
+            # (CosyVoice ~seconds) and registers no play proc, so a cancel that
+            # lands mid-synth kills nothing. Re-check before playing so the
+            # finished file is discarded instead of surfacing as stale audio.
+            if sid and sid in self._cancelled_sessions:
+                logger.debug("DROP cancelled-after-synth sid={}", sid)
                 try:
-                    await play(out_path, on_spawn=_register)
-                finally:
-                    try:
-                        out_path.unlink()
-                    except OSError:
-                        pass
-            except Exception as exc:
-                if sid and sid in self._cancelled_sessions:
-                    logger.debug("playback cancelled for session {}", sid)
-                else:
-                    logger.exception("worker failed: {}", exc)
+                    out_path.unlink()
+                except OSError:
+                    pass
+                return
+            try:
+                await play(out_path, on_spawn=_register)
             finally:
-                self._current_proc = None
-                self._current_session_id = None
-                if sid:
-                    self._cancelled_sessions.discard(sid)
+                try:
+                    out_path.unlink()
+                except OSError:
+                    pass
+        except Exception as exc:
+            if sid and sid in self._cancelled_sessions:
+                logger.debug("playback cancelled for session {}", sid)
+            else:
+                logger.exception("worker failed: {}", exc)
+        finally:
+            self._current_proc = None
+            self._current_session_id = None
+            if sid:
+                self._cancelled_sessions.discard(sid)
 
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
