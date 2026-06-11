@@ -474,3 +474,46 @@ def test_forward_event_codex_permission_request_with_cancel_disabled(tmp_path: P
     ) is True
     row = _recv_one(received)
     assert row["notification_type"] == "permission_prompt"
+
+
+class _ExplodingStream:
+    """Stream whose read() raising proves the muted path never consumes stdin."""
+
+    def read(self) -> str:
+        raise AssertionError("muted hook must not read its input stream")
+
+
+def test_forward_event_jarvis_mute_drops_without_reading_stream(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("JARVIS_MUTE", "1")
+    ok = forward_event(_ExplodingStream(), tmp_path / "j.sock")
+    assert ok is False
+
+
+def test_forward_event_jarvis_mute_never_touches_socket(monkeypatch, tmp_path: Path):
+    """A muted session must be invisible to the daemon — even a session_start
+    that would normally always speak gets dropped before the socket connect."""
+    monkeypatch.setenv("JARVIS_MUTE", "true")
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {"hook_event_name": "SessionStart", "source": "startup", "cwd": "/x"}
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is False
+    import time
+    time.sleep(0.05)
+    assert received == []
+
+
+def test_forward_event_jarvis_mute_off_values_still_forward(monkeypatch, tmp_path: Path):
+    """"0", "false" (any case), and empty string mean "not muted"."""
+    for i, value in enumerate(("0", "false", "FALSE", "")):
+        monkeypatch.setenv("JARVIS_MUTE", value)
+        sock_path = tmp_path / f"j{i}.sock"
+        received = _start_unix_echo_server(sock_path)
+        payload = {
+            "notification_type": "idle_prompt",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": "/x",
+        }
+        assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+        row = _recv_one(received)
+        assert row["notification_type"] == "idle_prompt"

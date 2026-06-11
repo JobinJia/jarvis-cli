@@ -7,6 +7,7 @@ Code reads stdout for hook decisions.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import time
@@ -25,6 +26,16 @@ from .config import DEFAULT_CONFIG_PATH, load_config
 # "auto" picks per-event from the question text (CJK → zh).
 _EN_ORDINALS = ("Option one", "Option two", "Option three", "Option four")
 _ZH_ORDINALS = ("选项一", "选项二", "选项三", "选项四")
+
+
+def _is_muted() -> bool:
+    """Per-session mute switch. Spawned sub-Claude sessions (eg orchestrate's
+    spawn-agent.sh) launch as `JARVIS_MUTE=1 claude …`; hooks inherit the env,
+    so the whole session stays silent while user-opened sessions are
+    unaffected. SessionStart payloads carry no field that distinguishes a
+    programmatic spawn from a user launch, hence the env-var channel."""
+    value = os.environ.get("JARVIS_MUTE", "")
+    return value.lower() not in ("", "0", "false")
 
 
 def _has_cjk(text: str) -> bool:
@@ -213,11 +224,16 @@ def forward_event(
     `lang_mode` ("en" | "zh" | "auto") only affects AskUserQuestion translation.
     `cancel_on_user_action`: when False, UserPromptSubmit / PostToolUse hook
     payloads are dropped without contacting the daemon.
+    When the `JARVIS_MUTE` env var is set (anything but ""/"0"/"false"), every
+    event is dropped before the stream is read — the session is fully silent.
 
     Returns True if successfully sent. Returns False on any failure
     (invalid JSON, socket missing, write error, dropped by policy) —
     never raises.
     """
+    if _is_muted():
+        return False
+
     sock_path = Path(sock_path)
     try:
         raw = stream.read()
