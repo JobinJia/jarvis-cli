@@ -23,6 +23,9 @@ xtts = [
     "torch>=2.2",
     "torchaudio>=2.2",
     "transformers>=4.57,<5",
+    # XTTS's tokenizer transliterates Chinese via pypinyin; without it the
+    # zh-cn path raises `ImportError: Chinese requires: pypinyin`.
+    "pypinyin>=0.50",
 ]
 
 # CosyVoice 3 via the Apache-2.0 Rust+Candle wheel (`cosyvoice3.rs`).

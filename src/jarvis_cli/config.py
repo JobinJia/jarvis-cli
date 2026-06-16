@@ -51,6 +51,15 @@ class XTTSConfig:
     model_dir: str = "~/.jarvis-cli/models/xtts-v2"
     ref_audio_zh: str = "~/.jarvis-cli/voices/jarvis_zh.wav"
     ref_audio_en: str = "~/.jarvis-cli/voices/jarvis_en.wav"
+    # Pre-extracted speaker embedding (.pth holding `gpt_cond_latent` +
+    # `speaker_embedding`). When set and present, the provider clones from
+    # this cached latent via `inference()` instead of re-encoding a ref wav
+    # on every call — faster and timbre-stable. The bundled Jarvis (Paul
+    # Bettany) embedding sounds noticeably better than our ref-wav clone, so
+    # it is the default fixed voice. English only — the Bettany timbre sounds
+    # muddy speaking Chinese, so the zh path always uses ref_audio_zh instead.
+    # Empty string falls back to the ref_audio_{zh,en} clone path above.
+    speaker_embedding: str = "~/.jarvis-cli/voices/jarvis_speaker.pth"
     device: str = "mps"
     # XTTS GPT decoder sampling temperature. Library default 0.75 is too
     # high for our use case — short Jarvis-toned commands suffer audible
@@ -263,6 +272,8 @@ def load_config(path: str | Path) -> Config:
     cfg.tts.xtts.model_dir = expanduser(cfg.tts.xtts.model_dir)
     cfg.tts.xtts.ref_audio_zh = expanduser(cfg.tts.xtts.ref_audio_zh)
     cfg.tts.xtts.ref_audio_en = expanduser(cfg.tts.xtts.ref_audio_en)
+    if cfg.tts.xtts.speaker_embedding:
+        cfg.tts.xtts.speaker_embedding = expanduser(cfg.tts.xtts.speaker_embedding)
     cfg.tts.cosyvoice.model_dir = expanduser(cfg.tts.cosyvoice.model_dir)
     cfg.tts.cosyvoice.ref_audio_zh = expanduser(cfg.tts.cosyvoice.ref_audio_zh)
     cfg.tts.cosyvoice.ref_audio_en = expanduser(cfg.tts.cosyvoice.ref_audio_en)
