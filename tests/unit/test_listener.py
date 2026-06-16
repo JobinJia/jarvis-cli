@@ -112,6 +112,52 @@ async def test_serve_unix_socket_routes_cancel_command(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_serve_unix_socket_replies_to_skill_query(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    seen: list[dict] = []
+
+    async def on_event(ev: Event): pass
+
+    async def on_query(payload: dict) -> dict:
+        seen.append(payload)
+        return {"context": "BODY", "mode": "body"}
+
+    server_task = asyncio.create_task(
+        serve_unix_socket(sock_path, on_event, on_query=on_query)
+    )
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert sock_path.exists()
+
+    def _roundtrip() -> dict:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(str(sock_path))
+        s.sendall(
+            (json.dumps({"command": "skill_query", "text": "hi"}) + "\n").encode()
+        )
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return json.loads(buf.split(b"\n", 1)[0].decode())
+
+    reply = await asyncio.to_thread(_roundtrip)
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert reply == {"context": "BODY", "mode": "body"}
+    assert seen and seen[0]["text"] == "hi"
+
+
+@pytest.mark.asyncio
 async def test_serve_unix_socket_ignores_cancel_without_session_id(tmp_path: Path):
     sock_path = tmp_path / "j.sock"
     cancels: list[str] = []

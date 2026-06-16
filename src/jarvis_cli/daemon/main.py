@@ -100,6 +100,20 @@ class Daemon:
             ttl_seconds=cfg.behavior.session_briefing.weather_ttl_seconds,
         )
         self._last_briefing_at: float = 0.0
+        # RAG-over-skills. Imported lazily and only when enabled so the base
+        # install (no `skills` extra: no fastembed/numpy/yaml) is unaffected.
+        self.skills: object | None = None
+        if cfg.skills.enabled:
+            try:
+                from ..skills.service import SkillService
+
+                self.skills = SkillService(cfg.skills)
+                logger.info("skills: retrieval enabled")
+            except ImportError as exc:
+                logger.warning(
+                    "skills enabled in config but deps missing ({}); "
+                    "install jarvis-cli[skills]", exc,
+                )
 
     def _snapshot(self) -> dict:
         return {
@@ -170,6 +184,18 @@ class Daemon:
             return
         logger.debug("QUEUE key={}", dkey)
         await self.queue.put_or_drop(event)
+
+    async def _on_query(self, payload: dict) -> dict:
+        """Request/response handler for the hook's skill_query / skill_refresh.
+        Runs the CPU-bound retrieval off the event loop. Never raises."""
+        if self.skills is None:
+            return {"context": None, "mode": "none", "matches": []}
+        if payload.get("command") == "skill_refresh":
+            await asyncio.to_thread(self.skills.refresh)
+            return {"ok": True}
+        text = payload.get("text") or ""
+        sid = payload.get("session_id")
+        return await asyncio.to_thread(self.skills.query, text, session_id=sid)
 
     async def _worker(self) -> None:
         while True:
@@ -303,6 +329,7 @@ class Daemon:
                 Path(self.cfg.paths.socket),
                 self._on_event,
                 on_cancel=self.cancel_session,
+                on_query=self._on_query if self.skills is not None else None,
             )
         finally:
             worker_task.cancel()

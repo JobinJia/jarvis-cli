@@ -224,6 +224,39 @@ class BehaviorConfig:
 
 
 @dataclass
+class SkillsConfig:
+    """RAG-over-skills: hide the long tail of skills from the CC/Codex startup
+    prompt and surface the right one per-turn via embedding retrieval, injected
+    by the UserPromptSubmit hook. Opt-in (`enabled=false`) so existing TTS-only
+    users pull none of the embedding stack.
+
+    Needs the `skills` extra (fastembed). The daemon degrades to a no-op if the
+    extra is absent, so the hook simply injects nothing.
+    """
+    enabled: bool = False
+    # Cross-lingual model; see skills/embedder.py for why this default.
+    model_name: str = "jinaai/jina-embeddings-v2-base-zh"
+    # Persistent model cache — fastembed otherwise drops it in a temp dir that
+    # the OS can purge, forcing a slow re-download.
+    cache_dir: str = "~/.jarvis-cli/skills/models"
+    # Where catalog.json + vectors.npy live.
+    index_dir: str = "~/.jarvis-cli/skills"
+    top_k: int = 5
+    # Hybrid-score tiers (cosine + lexical boost): >= high injects the skill
+    # body; >= med offers a menu. Tuned for jina-v2-base-zh on Chinese prompts,
+    # where correct matches land ~0.34-0.86, clear mis-ranks <=0.32, pure noise
+    # <0.15. high=0.42 body-injects confident hits while excluding mis-ranks.
+    high_threshold: float = 0.42
+    med_threshold: float = 0.30
+    max_skills: int = 2
+    max_body_chars: int = 6000
+    total_char_budget: int = 9000
+    # Hook-side socket round-trip budget. The prompt must never stall on us, so
+    # a miss/timeout injects nothing.
+    query_timeout_ms: int = 400
+
+
+@dataclass
 class PathsConfig:
     socket: str = "~/.jarvis-cli/jarvis.sock"
     log: str = "~/.jarvis-cli/daemon.log"
@@ -236,6 +269,7 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     behavior: BehaviorConfig = field(default_factory=BehaviorConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
 
 
 def expanduser(p: str) -> str:
@@ -277,6 +311,8 @@ def load_config(path: str | Path) -> Config:
     cfg.tts.cosyvoice.model_dir = expanduser(cfg.tts.cosyvoice.model_dir)
     cfg.tts.cosyvoice.ref_audio_zh = expanduser(cfg.tts.cosyvoice.ref_audio_zh)
     cfg.tts.cosyvoice.ref_audio_en = expanduser(cfg.tts.cosyvoice.ref_audio_en)
+    cfg.skills.cache_dir = expanduser(cfg.skills.cache_dir)
+    cfg.skills.index_dir = expanduser(cfg.skills.index_dir)
     # Clamp humor_level rather than rejecting — a typo in config shouldn't
     # leave the daemon refusing to start.
     cfg.behavior.humor_level = max(0, min(3, int(cfg.behavior.humor_level)))

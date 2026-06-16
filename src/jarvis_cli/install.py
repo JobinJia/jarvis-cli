@@ -845,6 +845,11 @@ def main() -> int:
         "macOS `say` voice name like Karen); defaults to config",
     )
     p_say.set_defaults(func=cmd_say)
+
+    from .skills.cli import add_subparser as _add_skills_subparser
+
+    _add_skills_subparser(sub)
+
     args = parser.parse_args()
     return args.func(args)
 

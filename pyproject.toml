@@ -44,6 +44,18 @@ piper = [
     "piper-tts>=1.4",
 ]
 
+# RAG-over-skills: bound CC/Codex startup context by surfacing skills per-turn
+# via local embedding retrieval instead of listing every description at
+# startup. fastembed runs the ONNX model on CPU (pulls onnxruntime + tokenizers
+# + huggingface-hub); no PyTorch. The cross-lingual model (~0.22GB) downloads
+# on first use into the configured cache_dir. Kept optional so TTS-only users
+# pull none of it.
+skills = [
+    "fastembed>=0.8",
+    "numpy>=2.0",
+    "pyyaml>=6.0",
+]
+
 [project.scripts]
 jarvis-cli = "jarvis_cli.install:main"
 jarvis-cli-hook = "jarvis_cli.hook_client:main"

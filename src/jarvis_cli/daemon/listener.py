@@ -49,11 +49,15 @@ async def serve_unix_socket(
     on_event: Callable[[Event], Awaitable[None]],
     *,
     on_cancel: Callable[[str], Awaitable[None]] | None = None,
+    on_query: Callable[[dict], Awaitable[dict]] | None = None,
 ) -> None:
     """Run a unix-socket server forever, dispatching parsed rows.
 
     Event rows (with `notification_type`) go to `on_event`.
     `{"command":"cancel","session_id":"..."}` rows go to `on_cancel`.
+    `{"command":"skill_query"|"skill_refresh",...}` rows go to `on_query`,
+    whose returned dict is written back as a single JSON line — the only
+    request/response path on this socket (everything else is fire-and-forget).
     Rows missing session_id on cancel are dropped silently.
     """
     sock_path = Path(sock_path)
@@ -76,6 +80,19 @@ async def serve_unix_socket(
                     sid = payload.get("session_id")
                     if sid and on_cancel is not None:
                         await on_cancel(sid)
+                    continue
+                if isinstance(payload, dict) and \
+                        payload.get("command") in ("skill_query", "skill_refresh"):
+                    if on_query is not None:
+                        try:
+                            reply = await on_query(payload)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("skill_query handler failed: {}", exc)
+                            reply = {}
+                        writer.write(
+                            (json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8")
+                        )
+                        await writer.drain()
                     continue
                 ev = parse_payload(line)
                 if ev is None:

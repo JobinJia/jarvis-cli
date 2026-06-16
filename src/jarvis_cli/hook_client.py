@@ -6,6 +6,7 @@ Code reads stdout for hook decisions.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
@@ -272,23 +273,121 @@ def forward_event(
             pass
 
 
+def _request_reply(sock_path: str | Path, payload: dict, timeout_s: float) -> dict | None:
+    """Send one JSON line and read one JSON line back. Returns None on any
+    failure (daemon down, timeout, bad reply) — the caller injects nothing."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.settimeout(timeout_s)
+        s.connect(str(sock_path))
+        s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        line = buf.split(b"\n", 1)[0].decode("utf-8", errors="replace")
+        return json.loads(line) if line.strip() else None
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _prompt_text(payload: dict) -> str:
+    """Extract the user's prompt from a UserPromptSubmit payload (CC uses
+    `prompt`; tolerate Codex/other spellings)."""
+    for key in ("prompt", "user_prompt", "current_prompt", "text"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _emit_additional_context(context: str) -> None:
+    """Print the CC/Codex UserPromptSubmit injection envelope. This is the one
+    place the hook writes stdout — only with a valid additionalContext payload,
+    always exit 0 so the prompt is never blocked."""
+    sys.stdout.write(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": context,
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+    sys.stdout.flush()
+
+
+def maybe_inject_skills(raw: str, cfg) -> None:
+    """For UserPromptSubmit, ask the daemon for relevant skills and inject them;
+    for SessionStart, kick a best-effort index refresh. No-op unless skills are
+    enabled. Never raises, never blocks the prompt beyond the configured budget."""
+    if not getattr(cfg.skills, "enabled", False):
+        return
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    event = payload.get("hook_event_name")
+    timeout_s = max(0.05, cfg.skills.query_timeout_ms / 1000.0)
+
+    if event == "SessionStart":
+        # Refresh the index on cold start so newly installed skills get picked
+        # up. Fire-and-forget: short timeout, reply ignored.
+        _request_reply(cfg.paths.socket, {"command": "skill_refresh"}, timeout_s)
+        return
+
+    if event != "UserPromptSubmit":
+        return
+    text = _prompt_text(payload)
+    if not text.strip():
+        return
+    reply = _request_reply(
+        cfg.paths.socket,
+        {
+            "command": "skill_query",
+            "text": text,
+            "session_id": payload.get("session_id"),
+        },
+        timeout_s,
+    )
+    if reply and isinstance(reply, dict) and reply.get("context"):
+        _emit_additional_context(str(reply["context"]))
+
+
 def main() -> int:
     """Entry point registered as `jarvis-cli-hook` console_script.
 
     Must NEVER raise — Claude Code reads stdout for hook decisions and a
     traceback would corrupt that channel. All failures are silent and
-    exit 0.
+    exit 0. The only stdout this writes is a UserPromptSubmit additionalContext
+    envelope when a skill matches (see `maybe_inject_skills`).
     """
     try:
         cfg = load_config(DEFAULT_CONFIG_PATH)
         mode = getattr(cfg.behavior, "voice_language", "en") or "en"
         cancel = getattr(cfg.behavior, "cancel_on_user_action", True)
+        # Read stdin once; feed both the (fire-and-forget) TTS path and the
+        # (request/response) skills path. TTS first so a cancel reaches the
+        # daemon before we spend the skill-query round-trip.
+        raw = sys.stdin.read()
         forward_event(
-            sys.stdin,
+            io.StringIO(raw),
             cfg.paths.socket,
             lang_mode=mode,
             cancel_on_user_action=cancel,
         )
+        maybe_inject_skills(raw, cfg)
     except Exception:  # noqa: BLE001 — structural guarantee
         pass
     return 0
