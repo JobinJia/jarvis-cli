@@ -35,8 +35,17 @@ class PhraseRouter:
         # Callers wire this up to surface "Sir, switching to cloud" so
         # the user notices before the meter ticks for a while unnoticed.
         self._on_primary_fallback = on_primary_fallback
+        # Last spoken idle line, threaded into the next idle request as
+        # `avoid` so the model doesn't repeat itself back-to-back.
+        self._last_idle_line: str | None = None
 
     async def phrase(self, event: Event, lang: Lang) -> str:
+        text = await self._phrase_inner(event, lang)
+        if event.notification_type == "idle_prompt":
+            self._last_idle_line = text
+        return text
+
+    async def _phrase_inner(self, event: Event, lang: Lang) -> str:
         summary = extract.extract(event.tool_name, event.tool_input)
         summary = redact.scrub(
             summary,
@@ -48,6 +57,8 @@ class PhraseRouter:
             target_chars=target_chars,
             hard_cap=hard_cap,
             humor_level=self.cfg.behavior.humor_level,
+            avoid=self._last_idle_line
+            if event.notification_type == "idle_prompt" else None,
         )
         primary_failed = False
         for i, provider in enumerate((self.primary, self.fallback)):

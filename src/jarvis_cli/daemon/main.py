@@ -24,6 +24,7 @@ from ..tts.engine import TTSEngine
 from ..tts.providers.base import TTSProvider
 from ..tts.providers.cosyvoice import CosyVoiceProvider
 from ..tts.providers.elevenlabs import ElevenLabsProvider
+from ..tts.providers.piper import PiperProvider
 from ..tts.providers.say import SayProvider
 from ..tts.providers.xtts import XTTSProvider
 from ..types import Event
@@ -52,6 +53,7 @@ def _make_tts_provider(name: str, cfg: Config) -> TTSProvider | None:
     factories = {
         "xtts": lambda: XTTSProvider(cfg.tts.xtts),
         "cosyvoice": lambda: CosyVoiceProvider(cfg.tts.cosyvoice),
+        "piper": lambda: PiperProvider(cfg.tts.piper),
         "elevenlabs": lambda: ElevenLabsProvider(cfg.tts.elevenlabs),
         "say": lambda: SayProvider(),
     }

@@ -19,6 +19,7 @@ async def test_cosyvoice_writes_wav_via_cross_lingual(tmp_path: Path):
         ref_audio_zh=str(ref),
         ref_audio_en=str(ref),
         n_timesteps=10,
+        duration_baseline_path=str(tmp_path / "baseline.json"),
     )
     p = CosyVoiceProvider(cfg)
 
@@ -68,6 +69,7 @@ async def test_cosyvoice_picks_zh_ref_for_chinese_lang(tmp_path: Path):
         model_dir=str(tmp_path / "model"),
         ref_audio_zh=str(ref_zh),
         ref_audio_en=str(ref_en),
+        duration_baseline_path=str(tmp_path / "baseline.json"),
     )
     p = CosyVoiceProvider(cfg)
     fake_model = MagicMock()
@@ -95,6 +97,7 @@ async def test_cosyvoice_uses_zero_shot_when_ref_text_provided(tmp_path: Path):
         model_dir=str(tmp_path / "model"),
         ref_audio_zh=str(ref), ref_audio_en=str(ref),
         ref_text_en="I am Jarvis, a virtual artificial intelligence.",
+        duration_baseline_path=str(tmp_path / "baseline.json"),
     )
     p = CosyVoiceProvider(cfg)
     fake_model = MagicMock()
@@ -110,32 +113,45 @@ async def test_cosyvoice_uses_zero_shot_when_ref_text_provided(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Double-take retry (the bug behind the user-reported "repeated playback")
+# Double-take detection (the bug behind the user-reported "repeated playback").
+# Detection is by DURATION (see tts/duration_guard.py): a take running well
+# past the text's clean baseline is a repeat. So these tests drive the model
+# with silence of a given length — duration is all the detector reads.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_cosyvoice_retries_when_doubled_audio_detected(tmp_path: Path):
-    """When CosyVoice synthesizes audio that's far too long for the text
-    (cps below the threshold), the provider must retry — otherwise the
-    user hears the line played twice. Verified empirically as ~12% of
-    short-line synths even with ref_text_en set."""
+def _silence(seconds: float) -> list[float]:
+    """A flat clip of a given length; duration is the only signal that matters."""
+    return [0.0] * int(seconds * 24000)
+
+
+def _doubletake_cfg(tmp_path: Path) -> CosyVoiceConfig:
     ref = tmp_path / "ref_en.wav"
     ref.write_bytes(b"\x00" * 1024)
-    cfg = CosyVoiceConfig(
+    return CosyVoiceConfig(
         model_dir=str(tmp_path / "model"),
         ref_audio_zh=str(ref), ref_audio_en=str(ref),
         ref_text_en="(ref transcript)",
+        duration_ratio_threshold=1.35,
+        fallback_cps=12.0,
+        max_synth_attempts=4,
+        # Isolate each test: empty baseline file under tmp, not the real cache.
+        duration_baseline_path=str(tmp_path / "baseline.json"),
+        sample_dir=str(tmp_path / "samples"),
     )
-    p = CosyVoiceProvider(cfg)
 
-    # First call returns 240000 samples = 10s of "audio" for 33-char text
-    # → cps ≈ 3.3 (clearly doubled). Second call returns 48000 = 2s → cps
-    # ≈ 16.5 (clean). The retry must accept the second result.
+
+@pytest.mark.asyncio
+async def test_cosyvoice_retries_when_too_long(tmp_path: Path):
+    """A take running well past the text's expected duration is a double-take
+    (the model said the line twice) and must be retried."""
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    # 33-char text → char-fallback expected ≈ 33/12 = 2.75s, threshold ≈ 3.71s.
     fake_model = MagicMock()
     fake_model.inference_zero_shot = MagicMock(side_effect=[
-        [0.0] * 240000,  # doubled
-        [0.0] * 48000,   # clean
+        _silence(4.0),  # too long → repeat
+        _silence(2.0),  # normal → clean
     ])
     with patch.object(p, "_load_model", return_value=fake_model):
         await p.synthesize(
@@ -143,87 +159,195 @@ async def test_cosyvoice_retries_when_doubled_audio_detected(tmp_path: Path):
             lang="en", out_path=tmp_path / "out.wav",
         )
 
-    # Retry happened exactly once: 2 model calls total.
     assert fake_model.inference_zero_shot.call_count == 2
-
-    # The WAV on disk is from the CLEAN second call, not the doubled first.
     import wave
     with wave.open(str(tmp_path / "out.wav"), "rb") as w:
-        assert w.getnframes() == 48000
+        assert w.getnframes() == len(_silence(2.0))  # the clean second take
 
 
 @pytest.mark.asyncio
 async def test_cosyvoice_caps_retry_attempts(tmp_path: Path):
-    """If the model keeps returning doubled audio, eventually we give up
-    and ship the last result rather than looping forever — the user
-    hearing a double-take is better than the daemon hanging."""
-    ref = tmp_path / "ref_en.wav"
-    ref.write_bytes(b"\x00" * 1024)
-    cfg = CosyVoiceConfig(
-        model_dir=str(tmp_path / "model"),
-        ref_audio_zh=str(ref), ref_audio_en=str(ref),
-        ref_text_en="(ref)",
-    )
+    """If every take is too long, stop at max_synth_attempts and ship the last —
+    a heard double-take beats a hung daemon."""
+    cfg = _doubletake_cfg(tmp_path)
     p = CosyVoiceProvider(cfg)
     fake_model = MagicMock()
-    # Every call returns doubled audio.
-    fake_model.inference_zero_shot = MagicMock(
-        return_value=[0.0] * 240000,
-    )
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(4.0))
     with patch.object(p, "_load_model", return_value=fake_model):
         await p.synthesize(
             "Sir, Claude awaits your guidance.",
             lang="en", out_path=tmp_path / "out.wav",
         )
-    # Capped at _MAX_SYNTH_ATTEMPTS (3) — no infinite loop.
-    from jarvis_cli.tts.providers.cosyvoice import _MAX_SYNTH_ATTEMPTS
-    assert fake_model.inference_zero_shot.call_count == _MAX_SYNTH_ATTEMPTS
+    assert fake_model.inference_zero_shot.call_count == cfg.max_synth_attempts
 
 
 @pytest.mark.asyncio
-async def test_cosyvoice_skips_validation_on_long_input(tmp_path: Path):
-    """The double-take pathology is short-line specific. Long inputs run
-    once even if cps comes out low — punctuation pauses in long sentences
-    legitimately drop the average, and the false-positive cost would be a
-    huge latency hit."""
-    ref = tmp_path / "ref_en.wav"
-    ref.write_bytes(b"\x00" * 1024)
-    cfg = CosyVoiceConfig(
-        model_dir=str(tmp_path / "model"),
-        ref_audio_zh=str(ref), ref_audio_en=str(ref),
-        ref_text_en="(ref)",
-    )
+async def test_cosyvoice_checks_long_inputs_too(tmp_path: Path):
+    """Long lines are checked too — there is no length cap. (The old cps
+    heuristic skipped >80-char lines, leaving long-line double-takes
+    unguarded — e.g. the logged 147-char case.)"""
+    cfg = _doubletake_cfg(tmp_path)
     p = CosyVoiceProvider(cfg)
-    fake_model = MagicMock()
-    fake_model.inference_zero_shot = MagicMock(
-        return_value=[0.0] * 240000,  # would trigger retry on short input
-    )
     long_text = ("This is a much longer briefing line that goes on for "
                  "rather more than the eighty character validation cap.")
     assert len(long_text) > 80
+    # ~106 chars → expected ≈ 8.8s, threshold ≈ 11.9s.
+    fake_model = MagicMock()
+    fake_model.inference_zero_shot = MagicMock(side_effect=[
+        _silence(14.0),  # too long → repeat
+        _silence(8.0),   # normal → clean
+    ])
     with patch.object(p, "_load_model", return_value=fake_model):
         await p.synthesize(long_text, lang="en", out_path=tmp_path / "out.wav")
-    assert fake_model.inference_zero_shot.call_count == 1
+    assert fake_model.inference_zero_shot.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_cosyvoice_first_call_accepted_when_audio_is_clean(tmp_path: Path):
-    """No retry happens when the first synth is already fine — keeps the
-    common-case latency unchanged."""
-    ref = tmp_path / "ref_en.wav"
-    ref.write_bytes(b"\x00" * 1024)
-    cfg = CosyVoiceConfig(
-        model_dir=str(tmp_path / "model"),
-        ref_audio_zh=str(ref), ref_audio_en=str(ref),
-        ref_text_en="(ref)",
-    )
+async def test_cosyvoice_first_call_accepted_when_normal_length(tmp_path: Path):
+    """No retry when the first take is a normal length — common-case latency
+    unchanged."""
+    cfg = _doubletake_cfg(tmp_path)
     p = CosyVoiceProvider(cfg)
     fake_model = MagicMock()
-    # 33 chars / 2s ≈ 16.5 cps — well above threshold.
-    fake_model.inference_zero_shot = MagicMock(return_value=[0.0] * 48000)
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(2.0))
     with patch.object(p, "_load_model", return_value=fake_model):
         await p.synthesize(
             "Sir, Claude awaits your guidance.",
             lang="en", out_path=tmp_path / "out.wav",
         )
     assert fake_model.inference_zero_shot.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_baseline_catches_what_char_fallback_misses(
+    tmp_path: Path,
+):
+    """A learned per-text baseline is tighter than the char estimate: a take
+    that char-fallback alone would pass gets caught once the real clean length
+    is known."""
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    text = "Sir, Claude awaits your guidance."  # char expected 2.75s, thr 3.71s
+
+    # Teach the baseline a 2.2s clean take (char-fallback passes it too).
+    fake_model = MagicMock()
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(2.2))
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "a.wav")
+
+    # A 3.0s take: char-fallback (thr 3.71) would PASS, but the baseline
+    # (2.2 * 1.35 = 2.97) catches it → retry.
+    fake_model.inference_zero_shot = MagicMock(side_effect=[
+        _silence(3.0), _silence(2.2),
+    ])
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "b.wav")
+    assert fake_model.inference_zero_shot.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_saves_samples_when_enabled(tmp_path: Path):
+    """With save_synth_samples on, each take's wav + a metadata sidecar
+    (text, duration, expected, ratio, verdict) is dumped to sample_dir."""
+    import json
+
+    cfg = _doubletake_cfg(tmp_path)
+    cfg.save_synth_samples = True
+    p = CosyVoiceProvider(cfg)
+    fake_model = MagicMock()
+    # 11-char text, 1.0s → char threshold ≈ 1.24s, so this is clean (1 call).
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(1.0))
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize("Sir, ready.", lang="en", out_path=tmp_path / "o.wav")
+
+    wavs = list((tmp_path / "samples").glob("*.wav"))
+    metas = list((tmp_path / "samples").glob("*.json"))
+    assert len(wavs) == 1
+    assert len(metas) == 1
+    d = json.loads(metas[0].read_text())
+    assert d["text"] == "Sir, ready."
+    assert d["lang"] == "en"
+    assert "duration_s" in d
+    assert "ratio" in d
+    assert d["is_repeat"] is False
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_no_samples_when_disabled(tmp_path: Path):
+    """Sampling is off by default — no files written, no overhead."""
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    fake_model = MagicMock()
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(1.0))
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize("Sir, ready.", lang="en", out_path=tmp_path / "o.wav")
+    assert not (tmp_path / "samples").exists()
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_ships_shortest_take_when_all_flagged(tmp_path: Path):
+    """When every attempt is flagged a repeat, ship the SHORTEST take — it is
+    the least likely to contain an audible double-take — not whichever take
+    happened to be last."""
+    import wave
+
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    text = "Sir, Claude awaits your guidance."  # char est 2.75s, thr 3.71s
+    fake_model = MagicMock()
+    fake_model.inference_zero_shot = MagicMock(side_effect=[
+        _silence(5.0), _silence(4.0), _silence(6.0), _silence(4.5),
+    ])
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "out.wav")
+    assert fake_model.inference_zero_shot.call_count == cfg.max_synth_attempts
+    with wave.open(str(tmp_path / "out.wav"), "rb") as w:
+        assert w.getnframes() == len(_silence(4.0))  # the shortest, not the last
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_escape_valve_unsticks_too_low_baseline(tmp_path: Path):
+    """A baseline set too low (one fast fluke) flags every normal take forever,
+    because a clean take is never recorded to correct it. When retries exhaust,
+    the shortest plausibly-clean take is recorded — raising the median so the
+    text un-sticks on the next synth."""
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    text = "Sir, Claude awaits your guidance."  # 33 chars
+    # Seed a too-low baseline: a single fast fluke at 1.6s (median = 1.6,
+    # threshold 1.6*1.35 = 2.16s) makes normal ~2.5s takes look like repeats.
+    p._baseline.record(text, 1.6)
+
+    # Round 1: every take is a normal-paced 2.5s (33/2.5 = 13.2 cps) but still
+    # over 2.16s → all flagged, retries exhaust, escape valve learns 2.5s.
+    fake1 = MagicMock()
+    fake1.inference_zero_shot = MagicMock(return_value=_silence(2.5))
+    with patch.object(p, "_load_model", return_value=fake1):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "a.wav")
+    assert fake1.inference_zero_shot.call_count == cfg.max_synth_attempts
+
+    # Round 2: the median has risen (1.6 and 2.5 → 2.05s), so a 2.5s take
+    # (ratio 1.22) is now accepted on the first try. The trap is broken.
+    fake2 = MagicMock()
+    fake2.inference_zero_shot = MagicMock(return_value=_silence(2.5))
+    with patch.object(p, "_load_model", return_value=fake2):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "b.wav")
+    assert fake2.inference_zero_shot.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_escape_valve_ignores_genuine_double_take(tmp_path: Path):
+    """The escape valve must not learn from a take that is itself too slow to
+    be clean (a real double-take). Such a take leaves the baseline untouched."""
+    cfg = _doubletake_cfg(tmp_path)
+    p = CosyVoiceProvider(cfg)
+    text = "Sir, Claude awaits your guidance."  # 33 chars
+    # Every take is 5.0s → 33/5.0 = 6.6 cps, below the clean floor → a real
+    # double-take. Exhaust retries; the baseline must stay empty (char fallback).
+    fake_model = MagicMock()
+    fake_model.inference_zero_shot = MagicMock(return_value=_silence(5.0))
+    with patch.object(p, "_load_model", return_value=fake_model):
+        await p.synthesize(text, lang="en", out_path=tmp_path / "out.wav")
+    v = p._baseline.check(text, 2.5, ratio_threshold=1.35, fallback_cps=12.0)
+    assert v.expected != 5.0  # nothing learned from the double-take
+    assert abs(v.expected - 33 / 12.0) < 0.01  # still pure char fallback

@@ -34,6 +34,13 @@ cosyvoice = [
     "numpy>=2.0",
 ]
 
+# Piper TTS: MIT, ONNX, CPU-only (no PyTorch / no Metal). Fixed-speaker voices
+# can't drift in accent and synth at ~0.03 RTF warm. ~15MB wheel + per-voice
+# ONNX models fetched via `python -m piper.download_voices <name>`.
+piper = [
+    "piper-tts>=1.4",
+]
+
 [project.scripts]
 jarvis-cli = "jarvis_cli.install:main"
 jarvis-cli-hook = "jarvis_cli.hook_client:main"

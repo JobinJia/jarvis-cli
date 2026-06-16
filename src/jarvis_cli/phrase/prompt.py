@@ -7,6 +7,7 @@ ready to pass to any provider.
 from __future__ import annotations
 
 import json
+import random
 
 from ..types import Event, Lang
 
@@ -46,6 +47,36 @@ def _humor_clause(level: int) -> str:
     """Pick a humor clause. Out-of-range levels clamp to the nearest end."""
     return _HUMOR_CLAUSES[max(0, min(len(_HUMOR_CLAUSES) - 1, level))]
 
+
+# Improvisation angles for idle_prompt. The model writes the sentence; these
+# only point it somewhere new each time. Without a varying input, small
+# models converge on one or two stock phrasings regardless of temperature.
+_IDLE_FLAVORS: tuple[str, ...] = (
+    "a chess move awaited",
+    "a theatre stage gone quiet",
+    "a military situation report",
+    "a ship's bridge awaiting orders",
+    "an orchestra awaiting its conductor",
+    "a butler announcing that everything is ready",
+    "a race pit crew on standby",
+    "the calm before the storm",
+    "a telegraph line gone silent",
+    "a chauffeur idling the engine",
+    "a library hush",
+    "tea served and going cold",
+)
+
+# Appended to the system prompt only for idle_prompt requests.
+_IDLE_CLAUSE = (
+    " This is an idle notification with nothing to report; improvise a fresh "
+    "one-liner inviting the user back, riffing on the 'flavor' hint. Never "
+    "reuse the phrasing in 'avoid', and do not copy the example reply."
+)
+
+
+def _pick_flavor() -> str:
+    return random.choice(_IDLE_FLAVORS)
+
 _FEW_SHOT_ZH = [
     {"role": "user",
      "content": '{"notification_type":"permission_prompt","tool_name":"Bash","summary":"rm -rf ~/tmp/xyz"}'},
@@ -57,8 +88,9 @@ _FEW_SHOT_ZH = [
      "content": '{"notification_type":"permission_prompt","tool_name":"WebFetch","summary":"fetch https://example.com"}'},
     {"role": "assistant", "content": "先生，他欲访问 example.com，请您过目。"},
     {"role": "user",
-     "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":""}'},
-    {"role": "assistant", "content": "先生，Claude 静候您的吩咐。"},
+     "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":"",'
+                '"flavor":"an orchestra awaiting its conductor","avoid":"先生，Claude 静候您的吩咐。"}'},
+    {"role": "assistant", "content": "先生，乐团已就位，只候您执棒。"},
     {"role": "user",
      "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: Pick a colour | options: Red; Blue; Green"}'},
     {"role": "assistant",
@@ -80,8 +112,9 @@ _FEW_SHOT_EN = [
      "content": '{"notification_type":"permission_prompt","tool_name":"WebFetch","summary":"fetch https://example.com"}'},
     {"role": "assistant", "content": "Sir, he wishes to reach example.com — please attend."},
     {"role": "user",
-     "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":""}'},
-    {"role": "assistant", "content": "Sir, Claude awaits your guidance."},
+     "content": '{"notification_type":"idle_prompt","tool_name":null,"summary":"",'
+                '"flavor":"a chess move awaited","avoid":"Sir, Claude awaits your guidance."}'},
+    {"role": "assistant", "content": "Your move, sir — the board is set."},
     {"role": "user",
      "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: Pick a colour | options: Red; Blue; Green"}'},
     {"role": "assistant",
@@ -100,6 +133,7 @@ def build_messages(
     target_chars: int,
     hard_cap: int,
     humor_level: int = 1,
+    avoid: str | None = None,
 ) -> list[dict[str, str]]:
     """Build OpenAI-compatible chat messages for an Event.
 
@@ -109,8 +143,13 @@ def build_messages(
     `humor_level` (0-3) selects which wit clause goes into the system
     prompt — see `_HUMOR_CLAUSES`. Defaults to 1 so callers that don't
     yet thread the config field through still get sensible behavior.
+
+    `avoid` (idle_prompt only) is the previously spoken idle line; the
+    request carries it plus a random `flavor` hint so the model improvises
+    a fresh sentence instead of parroting one stock phrase.
     """
     humor = _humor_clause(humor_level)
+    is_idle = event.notification_type == "idle_prompt"
     if lang == "zh":
         sys = _SYSTEM_BASE.format(
             addr="先生", lang_name="中文",
@@ -124,12 +163,17 @@ def build_messages(
         )
         few_shot = _FEW_SHOT_EN
 
-    user_blob = json.dumps(
-        {
-            "notification_type": event.notification_type,
-            "tool_name": event.tool_name,
-            "summary": summary,
-        },
-        ensure_ascii=False,
-    )
+    if is_idle:
+        sys += _IDLE_CLAUSE
+
+    blob: dict[str, object] = {
+        "notification_type": event.notification_type,
+        "tool_name": event.tool_name,
+        "summary": summary,
+    }
+    if is_idle:
+        blob["flavor"] = _pick_flavor()
+        if avoid:
+            blob["avoid"] = avoid
+    user_blob = json.dumps(blob, ensure_ascii=False)
     return [{"role": "system", "content": sys}, *few_shot, {"role": "user", "content": user_blob}]

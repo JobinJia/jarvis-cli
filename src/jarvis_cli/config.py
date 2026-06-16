@@ -97,6 +97,47 @@ class CosyVoiceConfig:
     # steps and the quality delta on Bettany short lines is sub-perceptible
     # in A/B testing. Bump back to 10 if you ever hear artifacts.
     n_timesteps: int = 5
+    # Double-take detection (see tts/duration_guard.py). After each synth we
+    # compare its duration against the text's clean baseline (median of a
+    # rolling window of recent clean takes); a synth running past baseline x
+    # duration_ratio_threshold is a repeat and gets retried. `fallback_cps`
+    # drives the chars/cps estimate used before a per-text baseline exists.
+    # (An SSM self-similarity approach was tried and discarded — on real audio
+    # it couldn't separate a true double-take from the ordinary self-similarity
+    # of normal long speech.) `save_synth_samples` dumps each synth + metadata
+    # to sample_dir for offline analysis.
+    #
+    # Threshold is 1.5 against the MEDIAN baseline: clean takes vary ±30-40%, so
+    # a normal take lands within ~1.3x of the median while a full double-take is
+    # ~2x — 1.5 sits cleanly between. (An earlier 1.35 against the per-text
+    # MINIMUM mis-flagged ~30% of clean takes, because the min was the fastest
+    # fluke, not the typical length.) Trade-off: a partial double-take near 1.4x
+    # may pass — duration alone cannot separate it from clean jitter.
+    duration_ratio_threshold: float = 1.5
+    fallback_cps: float = 12.0
+    max_synth_attempts: int = 4
+    save_synth_samples: bool = False
+    sample_dir: str = "~/.jarvis-cli/cache/samples"
+    duration_baseline_path: str = "~/.jarvis-cli/cache/duration_baseline.json"
+
+
+@dataclass
+class PiperConfig:
+    """Piper TTS (rhasspy) via the MIT `piper-tts` wheel: ONNX, CPU-only, no
+    PyTorch. Unlike the CosyVoice zero-shot clone, Piper renders from a FIXED
+    single-speaker model, so the speaker/accent is baked into the weights and
+    cannot drift (the CosyVoice 0.5B clone intermittently drifted to an Indian
+    accent) and there is no flow-decoder double-take to guard against. Warm
+    per-utterance RTF is ~0.03 (≈30x realtime) since the model stays resident.
+
+    Voices are `<name>.onnx` (+ `.onnx.json`) under `data_dir`; fetch with
+    `python -m piper.download_voices <name> --data-dir <data_dir>`.
+    """
+    data_dir: str = "~/.jarvis-cli/models/piper"
+    # British male butler voice — the default Jarvis identity is English.
+    # Swap to a JARVIS-tuned voice (e.g. jgkawell/jarvis on HF) for closer timbre.
+    voice_en: str = "en_GB-alan-medium"
+    voice_zh: str = "zh_CN-huayan-medium"
 
 
 @dataclass
@@ -106,6 +147,7 @@ class TTSConfig:
     xtts: XTTSConfig = field(default_factory=XTTSConfig)
     elevenlabs: ElevenLabsConfig = field(default_factory=ElevenLabsConfig)
     cosyvoice: CosyVoiceConfig = field(default_factory=CosyVoiceConfig)
+    piper: PiperConfig = field(default_factory=PiperConfig)
 
 
 @dataclass

@@ -11,12 +11,17 @@ from jarvis_cli.briefing import (
     WeatherCache,
     WeatherSnapshot,
     _clean_llm_output,
+    _deg_to_compass,
+    _fetch_wttr,
     _format_date,
     _format_time,
     _format_weather,
     _greeting,
     _is_usable_briefing,
+    _parse_open_meteo,
+    _wmo_condition,
     compose_briefing,
+    fetch_weather,
 )
 from jarvis_cli.config import SessionBriefingConfig
 from jarvis_cli.phrase.providers.base import PhraseProvider
@@ -424,21 +429,120 @@ def test_is_usable_briefing_accepts_normal_lines() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_weather_returns_none_on_http_error(
+async def test_fetch_wttr_returns_none_on_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Network/HTTP failures must not raise — they must degrade to None
-    so the briefing can fall back to a time-only line."""
+    """A wttr.in network/HTTP failure must not raise — it returns None so
+    fetch_weather can fall through to the next source."""
     from jarvis_cli import briefing
-
-    class _BoomTransport(httpx.MockTransport):
-        def __init__(self) -> None:
-            super().__init__(lambda req: (_ for _ in ()).throw(
-                httpx.ConnectError("nope"),
-            ))
 
     async def _explode(city: str, timeout: float) -> dict:
         raise httpx.ConnectError("nope")
 
     monkeypatch.setattr(briefing, "_fetch_weather_raw", _explode)
-    assert await briefing.fetch_weather("Shanghai", timeout=0.1) is None
+    assert await briefing._fetch_wttr("Shanghai", timeout=0.1) is None
+
+
+# --- multi-source weather (wttr.in → open-meteo fallback) -------------------
+
+
+@pytest.mark.parametrize(
+    "deg,compass",
+    [(0, "N"), (90, "E"), (180, "S"), (270, "W"), (229, "SW"), (360, "N")],
+)
+def test_deg_to_compass(deg: float, compass: str) -> None:
+    assert _deg_to_compass(deg) == compass
+
+
+@pytest.mark.parametrize(
+    "code,desc",
+    [
+        (0, "clear sky"),
+        (2, "partly cloudy"),
+        (53, "drizzle"),
+        (65, "heavy rain"),
+        (95, "thunderstorm"),
+    ],
+)
+def test_wmo_condition_maps_known_codes(code: int, desc: str) -> None:
+    assert _wmo_condition(code) == desc
+
+
+def test_wmo_condition_falls_back_for_unknown_code() -> None:
+    assert _wmo_condition(12345) == "unsettled weather"
+
+
+def test_parse_open_meteo_builds_snapshot() -> None:
+    """Real open-meteo shape: a geocoding result + a forecast `current` block.
+    Temp/wind are floats that round to int; wind degrees map to a compass
+    abbreviation `_format_weather` already knows how to read."""
+    loc = {"name": "Chongqing", "latitude": 29.56, "longitude": 106.56}
+    data = {
+        "current": {
+            "temperature_2m": 18.3,
+            "relative_humidity_2m": 90,
+            "weather_code": 53,
+            "wind_speed_10m": 14.4,
+            "wind_direction_10m": 229,
+        }
+    }
+
+    snap = _parse_open_meteo(data, loc, fallback_city="X")
+
+    assert snap.city == "Chongqing"
+    assert snap.temp_c == 18      # 18.3 rounded
+    assert snap.condition == "drizzle"
+    assert snap.humidity == 90
+    assert snap.wind_kph == 14    # 14.4 rounded
+    assert snap.wind_dir == "SW"  # 229° → SW
+
+
+@pytest.mark.asyncio
+async def test_fetch_weather_falls_back_to_open_meteo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wttr.in failing falls through to open-meteo transparently."""
+    snap = WeatherSnapshot(
+        city="Chongqing", temp_c=18, condition="drizzle",
+        humidity=90, wind_kph=14, wind_dir="SW",
+    )
+
+    async def _wttr_fails(city: str, timeout: float) -> WeatherSnapshot | None:
+        return None
+
+    om = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", _wttr_fails)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", om)
+
+    result = await fetch_weather("Chongqing", 3.0)
+    assert result is snap
+    assert om.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_weather_skips_backup_when_primary_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wttr.in succeeding means open-meteo is never called — saves a request."""
+    snap = WeatherSnapshot(
+        city="Chongqing", temp_c=20, condition="clear sky",
+        humidity=50, wind_kph=5, wind_dir="N",
+    )
+    primary = _FakeFetch(snap)
+    backup = _FakeFetch(None)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", primary)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", backup)
+
+    result = await fetch_weather("Chongqing", 3.0)
+    assert result is snap
+    assert primary.calls == 1
+    assert backup.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_weather_returns_none_when_all_sources_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", _FakeFetch(None))
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", _FakeFetch(None))
+    assert await fetch_weather("Chongqing", 3.0) is None

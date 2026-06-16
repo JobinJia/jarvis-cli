@@ -210,15 +210,117 @@ def _parse_weather(data: dict[str, Any], fallback_city: str) -> WeatherSnapshot:
     )
 
 
-async def fetch_weather(city: str, timeout: float) -> WeatherSnapshot | None:
-    """One-shot fetch. Returns None on any failure (network, timeout,
-    HTTP error, or schema drift) so callers can degrade gracefully."""
+async def _fetch_wttr(city: str, timeout: float) -> WeatherSnapshot | None:
+    """wttr.in source. Returns None on any failure so `fetch_weather` can fall
+    through to the next source rather than raising."""
     try:
         data = await _fetch_weather_raw(city, timeout)
         return _parse_weather(data, fallback_city=city)
     except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
-        logger.warning("weather fetch failed for {!r}: {}", city, exc)
+        logger.warning("wttr.in fetch failed for {!r}: {}", city, exc)
         return None
+
+
+# --- open-meteo source (free, no API key) -----------------------------------
+
+_OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+_OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+# WMO weather interpretation codes → short, TTS-friendly descriptions.
+# See the "WMO Weather interpretation codes (WW)" table at open-meteo.com/en/docs.
+_WMO_DESC: dict[int, str] = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "fog", 48: "rime fog",
+    51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+    56: "light freezing drizzle", 57: "freezing drizzle",
+    61: "light rain", 63: "rain", 65: "heavy rain",
+    66: "light freezing rain", 67: "freezing rain",
+    71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains",
+    80: "light rain showers", 81: "rain showers", 82: "violent rain showers",
+    85: "light snow showers", 86: "snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail",
+    99: "thunderstorm with heavy hail",
+}
+
+_COMPASS_16 = (
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+)
+
+
+def _wmo_condition(code: int) -> str:
+    """Map a WMO weather code to a spoken-English description."""
+    return _WMO_DESC.get(code, "unsettled weather")
+
+
+def _deg_to_compass(deg: float) -> str:
+    """Wind bearing in degrees → 16-point compass abbreviation (e.g. 229→SW),
+    which `_format_weather` already expands to words via `_COMPASS`."""
+    return _COMPASS_16[int((deg % 360) / 22.5 + 0.5) % 16]
+
+
+def _parse_open_meteo(
+    data: dict[str, Any], loc: dict[str, Any], fallback_city: str,
+) -> WeatherSnapshot:
+    cur = data["current"]
+    return WeatherSnapshot(
+        city=loc.get("name") or fallback_city,
+        temp_c=round(float(cur["temperature_2m"])),
+        condition=_wmo_condition(int(cur["weather_code"])),
+        humidity=int(cur["relative_humidity_2m"]),
+        wind_kph=round(float(cur["wind_speed_10m"])),
+        wind_dir=_deg_to_compass(float(cur["wind_direction_10m"])),
+    )
+
+
+async def _fetch_open_meteo(city: str, timeout: float) -> WeatherSnapshot | None:
+    """open-meteo source: geocode the city to coordinates, then read its
+    current conditions. Returns None on any failure."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            geo = await client.get(
+                _OPEN_METEO_GEOCODE_URL, params={"name": city, "count": 1},
+            )
+            geo.raise_for_status()
+            results = geo.json().get("results") or []
+            if not results:
+                return None
+            loc = results[0]
+            fc = await client.get(
+                _OPEN_METEO_FORECAST_URL,
+                params={
+                    "latitude": loc["latitude"],
+                    "longitude": loc["longitude"],
+                    "current": (
+                        "temperature_2m,relative_humidity_2m,weather_code,"
+                        "wind_speed_10m,wind_direction_10m"
+                    ),
+                    "wind_speed_unit": "kmh",
+                },
+            )
+            fc.raise_for_status()
+            return _parse_open_meteo(fc.json(), loc, fallback_city=city)
+    except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("open-meteo fetch failed for {!r}: {}", city, exc)
+        return None
+
+
+# Sources tried in order; the first to return a snapshot wins. wttr.in first
+# (no geocoding round-trip needed), open-meteo as a robust fallback. Names, not
+# function objects, so `fetch_weather` resolves them at call time — keeps the
+# list monkeypatch-friendly in tests and trivial to extend with more sources.
+_WEATHER_SOURCES: tuple[str, ...] = ("_fetch_wttr", "_fetch_open_meteo")
+
+
+async def fetch_weather(city: str, timeout: float) -> WeatherSnapshot | None:
+    """Try each weather source in order; return the first successful snapshot,
+    or None if all fail (so callers degrade to a time-only briefing)."""
+    for name in _WEATHER_SOURCES:
+        source = globals()[name]
+        snap = await source(city, timeout)
+        if snap is not None:
+            return snap
+    return None
 
 
 class WeatherCache:
