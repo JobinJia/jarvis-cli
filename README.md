@@ -346,6 +346,34 @@ uv run jarvis-cli say \
 
 All modes piggyback on the `idle_prompt` event with a unique `tool_name` (from `--reason` or an auto-uuid) so dedup never collapses successive calls.
 
+## Skill governance (RAG-over-skills)
+
+As you install more Claude Code / Codex skills, every skill's `description` is loaded into the startup prompt whether or not you use it — context grows with your skill count. The `skills` extra hides that long tail and surfaces the right skill *per turn* instead: the `UserPromptSubmit` hook embeds your prompt, retrieves the closest skills from a local index, and injects the matching skill body as `additionalContext`. Because it injects the body directly (not via the Skill tool), it works even for skills hidden from the startup list or living in a disabled plugin.
+
+Opt-in and self-contained — TTS-only users pull none of the embedding stack.
+
+```bash
+uv sync --extra skills          # adds fastembed (ONNX, no PyTorch) + numpy + pyyaml
+
+# enable it in ~/.jarvis-cli/config.toml
+# [skills]
+# enabled = true
+
+# pre-fetch the model (resumable; recommended on slow networks)
+jarvis-cli skills download
+
+jarvis-cli skills status        # list discovered skills (no model load)
+jarvis-cli skills query 帮我提交代码   # see what a prompt would retrieve
+```
+
+How it composes with the hook the daemon already runs:
+
+- **Embedding model** — `jinaai/jina-embeddings-v2-base-zh` (bilingual zh/en, ONNX, ~0.64GB, downloaded once into `~/.jarvis-cli/skills/models`). Chosen for cross-lingual recall: a Chinese prompt matches an English skill description. Warm query is ~10-15ms; the model is pre-warmed at daemon start.
+- **Retrieval** — cosine similarity over a local index (`catalog.json` + `vectors.npy`), plus a small lexical boost so a shared proper noun (a prompt naming `vercel`/`vue`/`git`) lifts the obvious match. Tiered by score: a confident hit injects the skill body; a weaker one offers a one-line menu; below that, nothing.
+- **Hiding the long tail** — for standalone `~/.claude/skills/`, set `skillOverrides` (e.g. `"user-invocable-only"`) in `.claude/settings.local.json` to drop a skill's description from the model's startup context while keeping `/name` working. Plugin skills can't be hidden per-skill (manage those via `/plugin`); the retrieval hook still surfaces them on disk regardless of enabled state.
+
+Tune thresholds and model under `[skills]` in `config.toml` (see `SkillsConfig`). Everything degrades to a no-op without the extra: no model, no injection, TTS unaffected.
+
 ## Project layout
 
 ```
@@ -366,6 +394,14 @@ src/jarvis_cli/
 ├── tts/
 │   ├── engine.py         # primary → fallback
 │   └── providers/        # cosyvoice, xtts, elevenlabs, say
+├── skills/               # RAG-over-skills (optional `skills` extra)
+│   ├── catalog.py        # scan CC+Codex+plugin SKILL.md
+│   ├── embedder.py       # fastembed ONNX (lazy)
+│   ├── index.py          # catalog.json + vectors.npy
+│   ├── retriever.py      # cosine + lexical boost
+│   ├── injector.py       # tiered body / menu / none
+│   ├── service.py        # daemon-side query + per-session dedup
+│   └── cli.py            # jarvis-cli skills status|index|query|download
 ├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
 └── install.py            # CLI: install / uninstall / status / test
@@ -375,7 +411,7 @@ Further reading lives under [`docs/`](docs/):
 - [`docs/CODEX.md`](docs/CODEX.md) — Codex CLI event mapping, auto-patch internals, verification recipe.
 - [`docs/SWITCHING.md`](docs/SWITCHING.md) — provider/profile swap recipes (XTTS ⇄ CosyVoice ⇄ ElevenLabs ⇄ `say`).
 
-289+ unit + integration tests under `tests/`. Run with `uv run pytest`.
+315+ unit + integration tests under `tests/`. Run with `uv run pytest`.
 
 ## License
 
