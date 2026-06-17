@@ -1,6 +1,6 @@
 [project]
 name = "jarvis-cli"
-version = "0.2.2"
+version = "0.3.0"
 description = "Jarvis-voiced notification layer for Claude Code"
 requires-python = ">=3.11"
 license = { text = "MIT" }
