@@ -27,6 +27,17 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
     )
     q = ssub.add_parser("query", help="show what a prompt would retrieve")
     q.add_argument("text", nargs="+", help="the prompt text to test")
+
+    g = ssub.add_parser(
+        "govern",
+        help="hide standalone skills + disable skill-plugins (reversible)",
+    )
+    g.add_argument("--mode", default=None, help="skillOverrides state (default user-invocable-only)")
+    g.add_argument("--keep", default="", help="comma-separated skill/plugin names to leave visible")
+    g.add_argument("--dry-run", action="store_true", help="print the plan, change nothing")
+    ssub.add_parser("restore", help="reverse `govern` from its manifest")
+    ssub.add_parser("govern-status", help="show what governance currently manages")
+
     p.set_defaults(func=cmd_skills)
 
 
@@ -85,9 +96,84 @@ def _print_status() -> int:
     return 0
 
 
+def _cmd_govern(args: argparse.Namespace) -> int:
+    import json
+
+    from .govern import (
+        DEFAULT_MODE,
+        GovernPaths,
+        apply_governance,
+        build_plan,
+        discover,
+    )
+
+    paths = GovernPaths.default()
+    records = discover()
+    enabled = json.loads(paths.cc_settings.read_text()).get("enabledPlugins", {}) \
+        if paths.cc_settings.exists() else {}
+    keep = {k.strip() for k in args.keep.split(",") if k.strip()}
+    plan = build_plan(
+        records, enabled, keep=keep, mode=args.mode or DEFAULT_MODE,
+        cc_agents=paths.cc_agents,
+    )
+    print(f"plan (mode={plan.mode}):")
+    print(f"  hide {len(plan.standalone)} standalone skills: {', '.join(plan.standalone) or '—'}")
+    print(f"  disable {len(plan.plugins)} skill-plugins: {', '.join(plan.plugins) or '—'}")
+    print(f"  re-home {len(plan.agents)} agents: {', '.join(Path(d).name for _, d in plan.agents) or '—'}")
+    if plan.codex_skills:
+        print(f"  (codex skills detected: {', '.join(plan.codex_skills)})")
+    if args.dry_run:
+        print("dry-run: nothing changed.")
+        return 0
+    if plan.is_empty():
+        print("nothing to govern.")
+        return 0
+    apply_governance(plan, paths)
+    print(f"applied. manifest: {paths.manifest}")
+    print("note: takes effect in NEW Claude Code sessions. `skills restore` to undo.")
+    return 0
+
+
+def _cmd_restore() -> int:
+    from .govern import GovernPaths, restore_governance
+
+    res = restore_governance(GovernPaths.default())
+    if not res.get("restored"):
+        print(f"nothing to restore ({res.get('reason', 'no manifest')}).")
+        return 0
+    print(f"restored: re-enabled {len(res['plugins_reenabled'])} plugins, "
+          f"removed {len(res['skillOverrides_removed'])} skillOverrides, "
+          f"deleted {len(res['agents_removed'])} re-homed agents.")
+    print("takes effect in NEW Claude Code sessions.")
+    return 0
+
+
+def _cmd_govern_status() -> int:
+    import json
+
+    from .govern import GovernPaths
+
+    paths = GovernPaths.default()
+    if not paths.manifest.exists():
+        print("governance not applied (no manifest).")
+        return 0
+    m = json.loads(paths.manifest.read_text())
+    print(f"governing (mode={m.get('mode')}):")
+    print(f"  {len(m.get('skillOverrides', []))} standalone skills hidden")
+    print(f"  {len(m.get('plugins', []))} skill-plugins disabled: {', '.join(m.get('plugins', []))}")
+    print(f"  {len(m.get('agents', []))} agents re-homed")
+    return 0
+
+
 def cmd_skills(args: argparse.Namespace) -> int:
     if args.skills_cmd == "status":
         return _print_status()
+    if args.skills_cmd == "govern":
+        return _cmd_govern(args)
+    if args.skills_cmd == "restore":
+        return _cmd_restore()
+    if args.skills_cmd == "govern-status":
+        return _cmd_govern_status()
 
     cfg = load_config(DEFAULT_CONFIG_PATH).skills
     if args.skills_cmd == "download":
