@@ -41,12 +41,13 @@ Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cli-h
 
 Codex CLI 的事件映射与验证步骤见 [`docs/CODEX.md`](docs/CODEX.md);之后切换 provider 的方法见 [`docs/SWITCHING.md`](docs/SWITCHING.md)。
 
-- Hook 是「即发即忘」的(10ms 内返回,绝不阻塞 CC)。
+- Hook 对通知是「即发即忘」的(10ms 内返回,绝不阻塞 CC)。
 - 守护进程在 launchd 下常驻,崩溃后自动重启。
 - 以 `(cwd, type, tool)` 为键的 10 秒滑动窗口去重。
 - 有界队列(积压超过 5 条时丢弃最旧的)。
 - 根据事件 `cwd` 下的 `CLAUDE.md` / `AGENTS.md` / `README.md` 自动判别中英文。
 - 当本地 LLM(Ollama)滑落到云端 fallback 时,贾维斯会出声告知,好让你在开始烧 credit 之前就察觉。
+- 同一套 hook + 守护进程上的可选第二职能:装上 `skills` extra 后,`UserPromptSubmit` 还会按轮次检索并注入最相关的已装技能(一次约 10-40ms 的守护进程往返)—— 见[技能治理](#技能治理rag-over-skills)。默认关闭;其余所有事件仍是即发即忘。
 
 ## 环境要求
 
@@ -360,13 +361,19 @@ jarvis-cli skills download
 
 jarvis-cli skills status        # 列出发现的技能(不加载模型)
 jarvis-cli skills query 帮我提交代码   # 看一个提示会检索到什么
+
+# 一键应用隐藏策略,可回滚
+jarvis-cli skills govern --dry-run   # 预览将隐藏 / 禁用什么
+jarvis-cli skills govern             # 隐藏独立技能 + 禁用带技能的插件
+jarvis-cli skills govern-status      # 当前治理在管什么
+jarvis-cli skills restore            # 按 manifest 撤销
 ```
 
 它如何与守护进程已在运行的 hook 协同:
 
 - **Embedding 模型** —— `jinaai/jina-embeddings-v2-base-zh`(中英双语,ONNX,约 0.64GB,一次性下载到 `~/.jarvis-cli/skills/models`)。选它是为了跨语言召回:中文提示能匹配英文技能描述。热查询约 10-15ms;模型在守护进程启动时预热。
 - **检索** —— 在本地索引(`catalog.json` + `vectors.npy`)上做余弦相似度,外加一个小的词法加权,使共享的专有名词(提示里出现 `vercel`/`vue`/`git`)抬升明显匹配项。按分数分级:高置信命中注入技能正文;较弱的给出一行菜单;再低则什么都不做。
-- **隐藏长尾** —— 对独立的 `~/.claude/skills/`,在 `.claude/settings.local.json` 里设置 `skillOverrides`(如 `"user-invocable-only"`),把某技能的描述从模型启动上下文中剔除,同时保留 `/name` 可用。插件技能无法按单个技能隐藏(那些用 `/plugin` 管理);无论启用状态如何,检索 hook 仍会从磁盘呈现它们。
+- **隐藏长尾** —— `jarvis-cli skills govern` 把策略固化下来,并记录一份 manifest,使 `skills restore` 能精确反向撤销。独立的 `~/.claude/skills/` 会在 `.claude/settings.local.json` 里被设为 `skillOverrides`(`"user-invocable-only"`)—— 从模型启动上下文中剔除,同时保留 `/name` 可用。插件技能无法按单个技能隐藏,所以带技能的插件被整体禁用(其 agent 会先被重新安置到 `~/.claude/agents/`,例如 superpowers 的 `code-reviewer` 得以保留);不含技能的插件则保持不动。无论哪种情况,检索 hook 仍会无视启用状态从磁盘呈现每一个技能。`--keep name1,name2` 可保留一组热点技能可见。
 
 在 `config.toml` 的 `[skills]` 下调阈值与模型(见 `SkillsConfig`)。没有该 extra 时一切退化为空操作:没有模型、没有注入、TTS 不受影响。
 
@@ -397,17 +404,18 @@ src/jarvis_cli/
 │   ├── retriever.py      # cosine + lexical boost
 │   ├── injector.py       # tiered body / menu / none
 │   ├── service.py        # daemon-side query + per-session dedup
-│   └── cli.py            # jarvis-cli skills status|index|query|download
+│   ├── govern.py         # apply/restore the hiding policy (manifest)
+│   └── cli.py            # jarvis-cli skills status|query|download|govern|restore
 ├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
-└── install.py            # CLI: install / uninstall / status / test
+└── install.py            # CLI: install / uninstall / status / test / say
 ```
 
 更多文档见 [`docs/`](docs/):
 - [`docs/CODEX.md`](docs/CODEX.md) —— Codex CLI 事件映射、自动修补内部细节、验证步骤。
 - [`docs/SWITCHING.md`](docs/SWITCHING.md) —— provider/档位切换配方(XTTS ⇄ CosyVoice ⇄ ElevenLabs ⇄ `say`)。
 
-`tests/` 下有 315+ 单元 + 集成测试。用 `uv run pytest` 运行。
+`tests/` 下有 321+ 单元 + 集成测试。用 `uv run pytest` 运行。
 
 ## 许可
 

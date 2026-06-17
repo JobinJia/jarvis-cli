@@ -43,12 +43,13 @@ See [`docs/CODEX.md`](docs/CODEX.md) for the Codex CLI event mapping and
 verification recipe, or [`docs/SWITCHING.md`](docs/SWITCHING.md) for
 swapping providers afterwards.
 
-- Hook is fire-and-forget (returns under 10ms; never blocks CC).
+- Hook is fire-and-forget for notifications (returns under 10ms; never blocks CC).
 - Daemon runs forever under launchd, restarted on crash.
 - 10-second sliding-window dedup keyed by `(cwd, type, tool)`.
 - Bounded queue (drops oldest when >5 events backlogged).
 - English / Chinese auto-detect from `CLAUDE.md` / `AGENTS.md` / `README.md` in the event's `cwd`.
 - When the local LLM (Ollama) slips onto the cloud fallback, Jarvis announces it audibly so you notice before you start burning credits.
+- Optional second job on the same hook + daemon: with the `skills` extra, `UserPromptSubmit` also retrieves and injects the most relevant installed skill per turn (a ~10-40ms daemon round-trip) — see [Skill governance](#skill-governance-rag-over-skills). Off by default; every other event stays fire-and-forget.
 
 ## Requirements
 
@@ -413,14 +414,14 @@ src/jarvis_cli/
 │   └── cli.py            # jarvis-cli skills status|query|download|govern|restore
 ├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
-└── install.py            # CLI: install / uninstall / status / test
+└── install.py            # CLI: install / uninstall / status / test / say
 ```
 
 Further reading lives under [`docs/`](docs/):
 - [`docs/CODEX.md`](docs/CODEX.md) — Codex CLI event mapping, auto-patch internals, verification recipe.
 - [`docs/SWITCHING.md`](docs/SWITCHING.md) — provider/profile swap recipes (XTTS ⇄ CosyVoice ⇄ ElevenLabs ⇄ `say`).
 
-315+ unit + integration tests under `tests/`. Run with `uv run pytest`.
+321+ unit + integration tests under `tests/`. Run with `uv run pytest`.
 
 ## License
 
