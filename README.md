@@ -1,5 +1,7 @@
 # jarvis-cli
 
+**English** | [简体中文](README.zh-CN.md)
+
 A Jarvis-voiced notification layer for [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex).
 
 When Claude Code or Codex CLI needs your attention — permission prompts, idle waits, MCP elicitation dialogs, AskUserQuestion options, Codex `PermissionRequest`/`agent-turn-complete` — a daemon speaks one short, British-butler-toned sentence so you don't miss the moment while pouring coffee or stepping away from the screen. One daemon serves both clients.
