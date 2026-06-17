@@ -321,9 +321,22 @@ class Daemon:
             logger.warning("Streaming TTS failed, falling back to synth: {}", exc)
             return False
 
+    async def _prewarm_skills(self) -> None:
+        """Load the embedding model + build the index at daemon start so the
+        user's first prompt doesn't eat the ~1s cold-load. Best-effort: a
+        failure here just defers the cost to the first skill_query."""
+        if self.skills is None:
+            return
+        try:
+            ok = await asyncio.to_thread(self.skills.ensure_ready)
+            logger.info("skills: prewarm {}", "ready" if ok else "unavailable")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("skills: prewarm failed ({})", exc)
+
     async def run(self) -> None:
         await self.health.start()
         worker_task = asyncio.create_task(self._worker())
+        prewarm_task = asyncio.create_task(self._prewarm_skills())
         try:
             await serve_unix_socket(
                 Path(self.cfg.paths.socket),
@@ -333,10 +346,12 @@ class Daemon:
             )
         finally:
             worker_task.cancel()
-            try:
-                await worker_task
-            except asyncio.CancelledError:
-                pass
+            prewarm_task.cancel()
+            for t in (worker_task, prewarm_task):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
             await self.health.stop()
 
 

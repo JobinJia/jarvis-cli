@@ -244,10 +244,12 @@ class SkillsConfig:
     top_k: int = 5
     # Hybrid-score tiers (cosine + lexical boost): >= high injects the skill
     # body; >= med offers a menu. Tuned for jina-v2-base-zh on Chinese prompts,
-    # where correct matches land ~0.34-0.86, clear mis-ranks <=0.32, pure noise
-    # <0.15. high=0.42 body-injects confident hits while excluding mis-ranks.
+    # where correct matches land ~0.28-0.86, clear mis-ranks <=0.27, pure noise
+    # <0.15. high=0.42 body-injects confident hits; med=0.28 still surfaces a
+    # menu for short queries (e.g. "做个落地页" tops out ~0.29) while staying
+    # ~3x above the noise floor.
     high_threshold: float = 0.42
-    med_threshold: float = 0.30
+    med_threshold: float = 0.28
     max_skills: int = 2
     max_body_chars: int = 6000
     total_char_budget: int = 9000

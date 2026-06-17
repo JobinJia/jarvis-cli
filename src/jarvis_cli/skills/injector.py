@@ -23,7 +23,7 @@ from .retriever import Match
 class InjectionPolicy:
     # Hybrid-score thresholds (tuned for jina-v2-base-zh; see SkillsConfig).
     high_threshold: float = 0.42
-    med_threshold: float = 0.30
+    med_threshold: float = 0.28
     max_skills: int = 2  # max bodies injected in one turn
     max_body_chars: int = 6000  # per-skill body cap (~first chunk)
     total_char_budget: int = 9000  # across all bodies this turn
