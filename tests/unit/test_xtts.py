@@ -39,8 +39,8 @@ async def test_xtts_calls_underlying_engine(tmp_path: Path):
     # variance than we want.
     assert kwargs["temperature"] == pytest.approx(0.5)
     # "hello" is 5 chars → falls into the short bucket, so speed_short
-    # (1.30) is what reaches the engine, not speed_long.
-    assert kwargs["speed"] == pytest.approx(1.30)
+    # (1.15) is what reaches the engine, not speed_long.
+    assert kwargs["speed"] == pytest.approx(1.15)
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_xtts_uses_speaker_embedding_when_present(tmp_path: Path):
     assert kwargs["gpt_cond_latent"] is latents["gpt_cond_latent"]
     assert kwargs["speaker_embedding"] is latents["speaker_embedding"]
     assert kwargs["temperature"] == pytest.approx(0.5)
-    assert kwargs["speed"] == pytest.approx(1.30)
+    assert kwargs["speed"] == pytest.approx(1.15)
 
 
 @pytest.mark.asyncio

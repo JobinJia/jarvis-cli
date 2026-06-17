@@ -71,8 +71,10 @@ class XTTSConfig:
     # quickly. A single `speed` multiplier therefore over-speeds long text
     # while still feeling sluggish on short status lines. We split the knob:
     # texts under `short_threshold_chars` get `speed_short` (faster),
-    # longer ones get `speed_long` (closer to 1.0).
-    speed_short: float = 1.30
+    # longer ones get `speed_long` (closer to 1.0). 1.30 felt rushed in the
+    # Bettany voice on short status lines; 1.15 reads a touch slower (~9%)
+    # while staying snappy.
+    speed_short: float = 1.15
     speed_long: float = 1.00
     short_threshold_chars: int = 60
 
