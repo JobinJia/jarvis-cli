@@ -366,13 +366,19 @@ jarvis-cli skills download
 
 jarvis-cli skills status        # list discovered skills (no model load)
 jarvis-cli skills query 帮我提交代码   # see what a prompt would retrieve
+
+# apply the hiding policy in one shot, reversibly
+jarvis-cli skills govern --dry-run   # preview what would be hidden / disabled
+jarvis-cli skills govern             # hide standalone skills + disable skill-plugins
+jarvis-cli skills govern-status      # what governance currently manages
+jarvis-cli skills restore            # undo it from the manifest
 ```
 
 How it composes with the hook the daemon already runs:
 
 - **Embedding model** — `jinaai/jina-embeddings-v2-base-zh` (bilingual zh/en, ONNX, ~0.64GB, downloaded once into `~/.jarvis-cli/skills/models`). Chosen for cross-lingual recall: a Chinese prompt matches an English skill description. Warm query is ~10-15ms; the model is pre-warmed at daemon start.
 - **Retrieval** — cosine similarity over a local index (`catalog.json` + `vectors.npy`), plus a small lexical boost so a shared proper noun (a prompt naming `vercel`/`vue`/`git`) lifts the obvious match. Tiered by score: a confident hit injects the skill body; a weaker one offers a one-line menu; below that, nothing.
-- **Hiding the long tail** — for standalone `~/.claude/skills/`, set `skillOverrides` (e.g. `"user-invocable-only"`) in `.claude/settings.local.json` to drop a skill's description from the model's startup context while keeping `/name` working. Plugin skills can't be hidden per-skill (manage those via `/plugin`); the retrieval hook still surfaces them on disk regardless of enabled state.
+- **Hiding the long tail** — `jarvis-cli skills govern` codifies the policy and records a manifest so `skills restore` reverses it exactly. Standalone `~/.claude/skills/` get `skillOverrides` (`"user-invocable-only"`) in `.claude/settings.local.json` — dropped from the model's startup context while `/name` still works. Plugin skills can't be hidden per-skill, so a skill-providing plugin is disabled wholesale (its agents are re-homed to `~/.claude/agents/` first, so e.g. superpowers' `code-reviewer` survives); non-skill plugins are left alone. Either way the retrieval hook still surfaces every skill from disk regardless of enabled state. `--keep name1,name2` leaves a hot-set visible.
 
 Tune thresholds and model under `[skills]` in `config.toml` (see `SkillsConfig`). Everything degrades to a no-op without the extra: no model, no injection, TTS unaffected.
 
@@ -403,7 +409,8 @@ src/jarvis_cli/
 │   ├── retriever.py      # cosine + lexical boost
 │   ├── injector.py       # tiered body / menu / none
 │   ├── service.py        # daemon-side query + per-session dedup
-│   └── cli.py            # jarvis-cli skills status|index|query|download
+│   ├── govern.py         # apply/restore the hiding policy (manifest)
+│   └── cli.py            # jarvis-cli skills status|query|download|govern|restore
 ├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
 └── install.py            # CLI: install / uninstall / status / test
