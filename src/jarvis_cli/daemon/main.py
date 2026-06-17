@@ -322,13 +322,17 @@ class Daemon:
             return False
 
     async def _prewarm_skills(self) -> None:
-        """Load the embedding model + build the index at daemon start so the
-        user's first prompt doesn't eat the ~1s cold-load. Best-effort: a
-        failure here just defers the cost to the first skill_query."""
+        """Load the model + index AND run one throwaway query at daemon start so
+        the user's first prompt doesn't eat the ~1s cold path. The model load is
+        cheap; the real cost is onnxruntime's first inference, which a cached
+        index never triggers — so we embed once here. Best-effort: any failure
+        just defers the cost to the first real skill_query."""
         if self.skills is None:
             return
         try:
             ok = await asyncio.to_thread(self.skills.ensure_ready)
+            if ok:
+                await asyncio.to_thread(self.skills.query, "warmup")
             logger.info("skills: prewarm {}", "ready" if ok else "unavailable")
         except Exception as exc:  # noqa: BLE001
             logger.warning("skills: prewarm failed ({})", exc)
