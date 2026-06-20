@@ -56,6 +56,12 @@ skills = [
     "pyyaml>=6.0",
 ]
 
+# Install everything in one shot so `uv pip install -e '.[all]'` never
+# silently drops one extra's deps while installing another's.
+all = [
+    "jarvis-cli[xtts,cosyvoice,piper,skills]",
+]
+
 [project.scripts]
 jarvis-cli = "jarvis_cli.install:main"
 jarvis-cli-hook = "jarvis_cli.hook_client:main"
