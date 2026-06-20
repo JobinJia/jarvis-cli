@@ -1,0 +1,49 @@
+name: Release
+
+# Cut a GitHub Release whenever a v* tag is pushed. We do NOT publish to
+# PyPI: the `cosyvoice` extra pulls a wheel via a direct URL
+# (allow-direct-references), which PyPI rejects. Distribution is the source
+# tree plus the sdist/wheel attached here.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so --generate-notes can diff tags
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Guard against the 0.3.1 footgun: a tag whose number disagrees with
+      # pyproject.toml. Fail loudly instead of shipping a mislabeled release.
+      - name: Verify tag matches pyproject version
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME != pyproject version v$version"
+            exit 1
+          fi
+          echo "version $version matches tag $GITHUB_REF_NAME"
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
