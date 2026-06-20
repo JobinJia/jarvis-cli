@@ -25,9 +25,9 @@ _MAX_SESSIONS = 256
 
 
 class SkillService:
-    def __init__(self, cfg: SkillsConfig) -> None:
+    def __init__(self, cfg: SkillsConfig, embedder: Embedder | None = None) -> None:
         self.cfg = cfg
-        self._embedder = Embedder(cfg.model_name, cache_dir=cfg.cache_dir)
+        self._embedder = embedder or Embedder(cfg.model_name, cache_dir=cfg.cache_dir)
         self._retriever: SkillRetriever | None = None
         self._ready = False
         self._unavailable = False

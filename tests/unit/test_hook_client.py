@@ -7,16 +7,20 @@ from pathlib import Path
 from jarvis_cli.hook_client import forward_event
 
 
-def _start_unix_echo_server(path: Path) -> list[bytes]:
+def _start_unix_echo_server(path: Path, max_conns: int = 1) -> list[bytes]:
     received: list[bytes] = []
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(path))
-    sock.listen(1)
+    sock.listen(max_conns)
 
     def _serve():
-        conn, _ = sock.accept()
-        received.append(conn.recv(4096))
-        conn.close()
+        for _ in range(max_conns):
+            try:
+                conn, _ = sock.accept()
+                received.append(conn.recv(4096))
+                conn.close()
+            except OSError:
+                break
         sock.close()
 
     threading.Thread(target=_serve, daemon=True).start()
@@ -78,6 +82,17 @@ def _recv_one(received: list[bytes]) -> dict:
         _t.sleep(0.01)
     assert received, "server thread received nothing"
     return json.loads(received[0].decode().strip())
+
+
+def _recv_n(received: list[bytes], n: int) -> list[dict]:
+    import time as _t
+
+    for _ in range(100):
+        if len(received) >= n:
+            break
+        _t.sleep(0.01)
+    assert len(received) >= n, f"expected {n} messages, got {len(received)}"
+    return [json.loads(b.decode().strip()) for b in received[:n]]
 
 
 def test_forward_event_userpromptsubmit_sends_cancel(tmp_path: Path):
@@ -309,24 +324,56 @@ def test_forward_event_codex_permission_request_translates_to_permission_prompt(
     assert row["session_id"] == "sess-xyz"
 
 
-def test_forward_event_codex_notify_agent_turn_complete_becomes_idle_prompt(tmp_path: Path):
-    """Codex `notify = [...]` sends a flat kebab-case payload when a turn
-    finishes — equivalent to Claude Code's idle_prompt notification."""
+def test_forward_event_codex_first_turn_synthesizes_session_start(tmp_path: Path, monkeypatch):
+    """Codex v0.141+ does not fire SessionStart hooks. On the FIRST
+    agent-turn-complete for a thread, the hook synthesizes a session_start
+    before the idle_prompt so the briefing plays."""
+    import jarvis_cli.hook_client as hc
+
+    monkeypatch.setattr(hc, "_CODEX_SESSIONS_DIR", tmp_path / "sessions")
     sock_path = tmp_path / "j.sock"
-    received = _start_unix_echo_server(sock_path)
+    received = _start_unix_echo_server(sock_path, max_conns=2)
     payload = {
         "type": "agent-turn-complete",
-        "thread-id": "thr-1",
-        "turn-id": "turn-9",
+        "thread-id": "thr-first",
+        "turn-id": "turn-1",
         "cwd": "/Users/me/repo",
         "input-messages": ["please refactor"],
         "last-assistant-message": "Done.",
     }
     assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    rows = _recv_n(received, 2)
+    assert rows[0]["notification_type"] == "session_start"
+    assert rows[0]["session_id"] is None
+    assert rows[0]["cwd"] == "/Users/me/repo"
+    assert rows[1]["notification_type"] == "idle_prompt"
+    assert rows[1]["session_id"] == "thr-first"
+
+
+def test_forward_event_codex_second_turn_only_idle_prompt(tmp_path: Path, monkeypatch):
+    """After the first turn's synthetic session_start, subsequent turns
+    only emit idle_prompt (no repeat briefing)."""
+    import jarvis_cli.hook_client as hc
+
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(hc, "_CODEX_SESSIONS_DIR", sessions_dir)
+    sessions_dir.mkdir()
+    (sessions_dir / "thr-seen").write_text("")
+
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "type": "agent-turn-complete",
+        "thread-id": "thr-seen",
+        "turn-id": "turn-9",
+        "cwd": "/Users/me/repo",
+        "input-messages": ["continue"],
+        "last-assistant-message": "Done.",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
     row = _recv_one(received)
     assert row["notification_type"] == "idle_prompt"
-    assert row["session_id"] == "thr-1"
-    assert row["cwd"] == "/Users/me/repo"
+    assert row["session_id"] == "thr-seen"
 
 
 def test_forward_event_codex_user_prompt_submit_emits_cancel(tmp_path: Path):

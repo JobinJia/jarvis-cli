@@ -1,43 +1,36 @@
-"""Build, persist, and load the skill embedding index.
+"""Skill-specific embedding index: thin layer over the generic retrieval index.
 
-The index is a sidecar of the catalog: `catalog.json` (records + model name +
-per-skill content hashes) and `vectors.npy` (row-aligned embeddings). It lives
-under `~/.jarvis-cli/skills/` and is rebuilt only when the on-disk skills change
-(by `content_hash`) or the model changes — so the launchd daemon pays the embed
-cost once, not per prompt.
+Provides ``SkillRecord`` serializers and convenience wrappers that bind them
+so callers (SkillService, CLI) keep the same call signatures as before.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-from loguru import logger
 
+from ..retrieval.embedder import Embedder
+from ..retrieval.index import Index as _Index
+from ..retrieval.index import (
+    build_index,
+    ensure_index as _ensure_index,
+    is_stale,
+    load_index as _load_index,
+    save_index as _save_index,
+)
 from .catalog import SkillRecord
-from .embedder import Embedder
-
-_CATALOG_NAME = "catalog.json"
-_VECTORS_NAME = "vectors.npy"
 
 
 @dataclass
 class SkillIndex:
     model_name: str
     records: list[SkillRecord]
-    vectors: np.ndarray  # shape (len(records), dim), L2-normalized
+    vectors: np.ndarray
 
     def signature(self) -> dict[str, str]:
-        """key -> content_hash, for cheap staleness checks against a fresh scan."""
         return {r.key(): r.content_hash for r in self.records}
-
-
-def build_index(records: list[SkillRecord], embedder: Embedder) -> SkillIndex:
-    texts = [r.text_for_embedding() for r in records]
-    vectors = embedder.embed(texts) if texts else np.empty((0, 0), dtype=np.float32)
-    logger.info("skills: built index for {} skills", len(records))
-    return SkillIndex(model_name=embedder.model_name, records=records, vectors=vectors)
 
 
 def _record_to_dict(r: SkillRecord) -> dict:
@@ -68,56 +61,29 @@ def _record_from_dict(d: dict) -> SkillRecord:
     )
 
 
-def save_index(index: SkillIndex, index_dir: Path) -> None:
-    index_dir = Path(index_dir)
-    index_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "model_name": index.model_name,
-        "records": [_record_to_dict(r) for r in index.records],
-    }
-    (index_dir / _CATALOG_NAME).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+def _to_skill_index(idx: _Index) -> SkillIndex:
+    return SkillIndex(
+        model_name=idx.model_name, records=idx.records, vectors=idx.vectors,
     )
-    np.save(index_dir / _VECTORS_NAME, index.vectors)
+
+
+def save_index(index: SkillIndex, index_dir: Path) -> None:
+    _save_index(
+        _Index(index.model_name, index.records, index.vectors),
+        index_dir,
+        _record_to_dict,
+    )
 
 
 def load_index(index_dir: Path) -> SkillIndex | None:
-    index_dir = Path(index_dir)
-    cat = index_dir / _CATALOG_NAME
-    vec = index_dir / _VECTORS_NAME
-    if not cat.exists() or not vec.exists():
-        return None
-    try:
-        payload = json.loads(cat.read_text(encoding="utf-8"))
-        vectors = np.load(vec)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning("skills: failed to load index ({}); will rebuild", exc)
-        return None
-    records = [_record_from_dict(d) for d in payload.get("records", [])]
-    if len(records) != vectors.shape[0]:
-        logger.warning("skills: index row mismatch; will rebuild")
-        return None
-    return SkillIndex(
-        model_name=payload.get("model_name", ""), records=records, vectors=vectors
-    )
-
-
-def is_stale(index: SkillIndex, fresh: list[SkillRecord], model_name: str) -> bool:
-    """True if the index no longer matches the on-disk skills or the model."""
-    if index.model_name != model_name:
-        return True
-    return index.signature() != {r.key(): r.content_hash for r in fresh}
+    idx = _load_index(index_dir, _record_from_dict)
+    return _to_skill_index(idx) if idx is not None else None
 
 
 def ensure_index(
     index_dir: Path, embedder: Embedder, fresh: list[SkillRecord]
 ) -> SkillIndex:
-    """Load a current index from disk, or (re)build and persist it when the
-    on-disk skills or the model changed."""
-    existing = load_index(index_dir)
-    if existing is not None and not is_stale(existing, fresh, embedder.model_name):
-        logger.debug("skills: index up to date ({} skills)", len(existing.records))
-        return existing
-    rebuilt = build_index(fresh, embedder)
-    save_index(rebuilt, index_dir)
-    return rebuilt
+    idx = _ensure_index(
+        index_dir, embedder, fresh, _record_to_dict, _record_from_dict,
+    )
+    return _to_skill_index(idx)

@@ -261,6 +261,20 @@ class SkillsConfig:
 
 
 @dataclass
+class McpConfig:
+    """MCP intent routing: match user prompts against a registry of known MCP
+    servers and inject connection instructions for the best match.  Shares the
+    embedding model with SkillsConfig.  Opt-in (``enabled=false``)."""
+
+    enabled: bool = False
+    registry_path: str = "~/.jarvis-cli/mcp/registry.json"
+    index_dir: str = "~/.jarvis-cli/mcp"
+    top_k: int = 5
+    high_threshold: float = 0.35
+    med_threshold: float = 0.22
+
+
+@dataclass
 class PathsConfig:
     socket: str = "~/.jarvis-cli/jarvis.sock"
     log: str = "~/.jarvis-cli/daemon.log"
@@ -274,6 +288,7 @@ class Config:
     behavior: BehaviorConfig = field(default_factory=BehaviorConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
+    mcp: McpConfig = field(default_factory=McpConfig)
 
 
 def expanduser(p: str) -> str:
@@ -317,6 +332,8 @@ def load_config(path: str | Path) -> Config:
     cfg.tts.cosyvoice.ref_audio_en = expanduser(cfg.tts.cosyvoice.ref_audio_en)
     cfg.skills.cache_dir = expanduser(cfg.skills.cache_dir)
     cfg.skills.index_dir = expanduser(cfg.skills.index_dir)
+    cfg.mcp.registry_path = expanduser(cfg.mcp.registry_path)
+    cfg.mcp.index_dir = expanduser(cfg.mcp.index_dir)
     # Clamp humor_level rather than rejecting — a typo in config shouldn't
     # leave the daemon refusing to start.
     cfg.behavior.humor_level = max(0, min(3, int(cfg.behavior.humor_level)))

@@ -13,30 +13,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 from loguru import logger
 
-# Split a slug/identifier into space-separated words: handles `-`, `_`, `:`,
-# `/`, `.` and camelCase. "deploy-to-vercel" -> "deploy to vercel".
-_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
-_SEP = re.compile(r"[-_:/.]+")
-# Lexical tokens for the hybrid boost: ASCII words (len>=2) and CJK runs. A
-# Chinese query and an English description rarely share tokens, but shared
-# proper nouns ("vercel", "vue", "git") do — exactly the cases pure embeddings
-# miss — so the boost is additive, never the primary signal.
-_TOKEN = re.compile(r"[a-z0-9]{2,}|[一-鿿]+")
-
-
-def deslug(text: str) -> str:
-    return _SEP.sub(" ", _CAMEL.sub(" ", text)).strip()
-
-
-def lexical_tokens(text: str) -> set[str]:
-    return set(_TOKEN.findall((text or "").lower()))
+from ..retrieval.text import deslug, lexical_tokens
 
 # Skill source roots (relative to home, `~` expanded at scan time). We walk
 # each tree and keep any `SKILL.md` whose grandparent dir is `skills` — i.e.

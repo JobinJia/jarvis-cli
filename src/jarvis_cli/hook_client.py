@@ -29,6 +29,22 @@ _EN_ORDINALS = ("Option one", "Option two", "Option three", "Option four")
 _ZH_ORDINALS = ("选项一", "选项二", "选项三", "选项四")
 
 
+_CODEX_SESSIONS_DIR = Path(os.path.expanduser("~/.jarvis-cli/.codex-sessions"))
+
+
+def _is_first_codex_turn(thread_id: str) -> bool:
+    """File-based first-seen check for Codex thread-ids."""
+    try:
+        _CODEX_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        marker = _CODEX_SESSIONS_DIR / thread_id
+        if marker.exists():
+            return False
+        marker.write_text("", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
 def _is_muted() -> bool:
     """Per-session mute switch. Spawned sub-Claude sessions (eg orchestrate's
     spawn-agent.sh) launch as `JARVIS_MUTE=1 claude …`; hooks inherit the env,
@@ -251,26 +267,51 @@ def forward_event(
     ):
         return False
 
+    # Codex CLI v0.141+ does not fire SessionStart hooks. On the first
+    # agent-turn-complete for each thread, synthesize a session_start so
+    # the daemon's briefing pipeline triggers.
+    synth_start: dict | None = None
+    if (
+        payload.get("type") == "agent-turn-complete"
+        and (tid := payload.get("thread-id"))
+        and _is_first_codex_turn(tid)
+    ):
+        synth_start = {
+            "notification_type": "session_start",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": None,
+            "_received_at": time.time(),
+        }
+
     payload = _translate_cc_payload(payload, lang_mode=lang_mode)
-    if payload is None:
+    if payload is None and synth_start is None:
         return False
 
-    payload["_received_at"] = time.time()
-    line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        s.settimeout(0.5)
-        s.connect(str(sock_path))
-        s.sendall(line)
-        return True
-    except (FileNotFoundError, ConnectionRefusedError, OSError):
-        return False
-    finally:
+    def _send(data: dict) -> bool:
+        data.setdefault("_received_at", time.time())
+        line = (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8")
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            s.close()
-        except OSError:
-            pass
+            s.settimeout(0.5)
+            s.connect(str(sock_path))
+            s.sendall(line)
+            return True
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
+            return False
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    ok = False
+    if synth_start is not None:
+        ok = _send(synth_start) or ok
+    if payload is not None:
+        ok = _send(payload) or ok
+    return ok
 
 
 def _request_reply(sock_path: str | Path, payload: dict, timeout_s: float) -> dict | None:

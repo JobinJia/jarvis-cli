@@ -1,10 +1,11 @@
 """Turn retrieval results into the text injected as `additionalContext`.
 
-Tiered by cosine score so we only spend context when it pays off:
-  * strong match  -> inject the full skill body (model can act immediately,
-    no Skill-tool round-trip — works for hidden / disabled-plugin skills)
-  * medium match  -> inject a one-line menu so the model/user can choose
-  * weak          -> inject nothing (zero cost)
+Gated by signal structure, not just a score threshold:
+  * A match must have lexical signal (keyword/name overlap with the query)
+    OR very strong cosine (>= 0.50) to pass the gate at all — pure semantic
+    near-misses are filtered out regardless of score.
+  * Among gated matches: strong -> inject the full skill body; medium ->
+    inject a one-line menu; weak -> nothing.
 
 Bodies already injected earlier in the session are skipped: CC keeps an
 injected message for the rest of the session, so re-injecting is wasted
@@ -18,10 +19,16 @@ from dataclasses import dataclass, field
 from .loader import load_body
 from .retriever import Match
 
+_COSINE_SOLO_FLOOR = 0.50
+
+
+def _has_lexical_signal(m: Match) -> bool:
+    """True when the keyword / name boost contributed to the hybrid score."""
+    return m.score - m.cosine > 1e-4
+
 
 @dataclass
 class InjectionPolicy:
-    # Hybrid-score thresholds (tuned for jina-v2-base-zh; see SkillsConfig).
     high_threshold: float = 0.42
     med_threshold: float = 0.28
     max_skills: int = 2  # max bodies injected in one turn
@@ -61,11 +68,15 @@ def build_injection(
     policy = policy or InjectionPolicy()
     already = already_injected or set()
 
-    candidates = [m for m in matches if m.score >= policy.med_threshold]
-    if not candidates:
+    gated = [
+        m for m in matches
+        if m.score >= policy.med_threshold
+        and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
+    ]
+    if not gated:
         return InjectionResult(text=None, mode="none")
 
-    strong = [m for m in candidates if m.score >= policy.high_threshold]
+    strong = [m for m in gated if m.score >= policy.high_threshold]
     strong_fresh = [m for m in strong if m.record.key() not in already]
 
     if strong_fresh:
@@ -95,6 +106,6 @@ def build_injection(
     # Only medium-confidence matches: offer a cheap menu instead of a body.
     lines = [
         f"- `{m.record.name}` — {_oneline(m.record.description)}"
-        for m in candidates[: max(policy.max_skills + 1, 3)]
+        for m in gated[: max(policy.max_skills + 1, 3)]
     ]
     return InjectionResult(text=_MENU_PREAMBLE + "\n".join(lines), mode="menu")

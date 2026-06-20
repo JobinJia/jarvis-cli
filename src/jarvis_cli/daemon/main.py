@@ -100,20 +100,42 @@ class Daemon:
             ttl_seconds=cfg.behavior.session_briefing.weather_ttl_seconds,
         )
         self._last_briefing_at: float = 0.0
-        # RAG-over-skills. Imported lazily and only when enabled so the base
-        # install (no `skills` extra: no fastembed/numpy/yaml) is unaffected.
+        # Shared embedding model for RAG retrieval (skills + MCP intent
+        # routing).  Created once; both services share the instance to avoid
+        # loading the ~640 MB ONNX model twice.
         self.skills: object | None = None
-        if cfg.skills.enabled:
+        self.mcp: object | None = None
+        _embedder = None
+        if cfg.skills.enabled or cfg.mcp.enabled:
+            try:
+                from ..retrieval.embedder import Embedder
+
+                _embedder = Embedder(
+                    cfg.skills.model_name, cache_dir=cfg.skills.cache_dir,
+                )
+            except ImportError as exc:
+                logger.warning(
+                    "retrieval stack unavailable ({}); "
+                    "install jarvis-cli[skills]", exc,
+                )
+        if cfg.skills.enabled and _embedder is not None:
             try:
                 from ..skills.service import SkillService
 
-                self.skills = SkillService(cfg.skills)
+                self.skills = SkillService(cfg.skills, _embedder)
                 logger.info("skills: retrieval enabled")
             except ImportError as exc:
                 logger.warning(
-                    "skills enabled in config but deps missing ({}); "
-                    "install jarvis-cli[skills]", exc,
+                    "skills deps missing ({}); install jarvis-cli[skills]", exc,
                 )
+        if cfg.mcp.enabled and _embedder is not None:
+            try:
+                from ..mcp.service import McpService
+
+                self.mcp = McpService(cfg.mcp, _embedder)
+                logger.info("mcp: intent routing enabled")
+            except ImportError as exc:
+                logger.warning("mcp deps missing ({})", exc)
 
     def _snapshot(self) -> dict:
         return {
@@ -187,15 +209,39 @@ class Daemon:
 
     async def _on_query(self, payload: dict) -> dict:
         """Request/response handler for the hook's skill_query / skill_refresh.
-        Runs the CPU-bound retrieval off the event loop. Never raises."""
-        if self.skills is None:
-            return {"context": None, "mode": "none", "matches": []}
+        Now also runs MCP intent matching and merges both contexts.
+        Runs CPU-bound retrieval off the event loop. Never raises."""
         if payload.get("command") == "skill_refresh":
-            await asyncio.to_thread(self.skills.refresh)
+            if self.skills is not None:
+                await asyncio.to_thread(self.skills.refresh)
+            if self.mcp is not None:
+                await asyncio.to_thread(self.mcp.refresh)
             return {"ok": True}
+
         text = payload.get("text") or ""
         sid = payload.get("session_id")
-        return await asyncio.to_thread(self.skills.query, text, session_id=sid)
+
+        skill_result: dict = {"context": None, "mode": "none", "matches": []}
+        if self.skills is not None:
+            skill_result = await asyncio.to_thread(
+                self.skills.query, text, session_id=sid,
+            )
+
+        mcp_result: dict = {"context": None, "matches": []}
+        if self.mcp is not None:
+            mcp_result = await asyncio.to_thread(self.mcp.query, text)
+
+        parts = [
+            p for p in (skill_result.get("context"), mcp_result.get("context"))
+            if p
+        ]
+        merged = "\n\n---\n\n".join(parts) if parts else None
+
+        return {
+            "context": merged,
+            "mode": skill_result.get("mode", "none"),
+            "matches": skill_result.get("matches", []),
+        }
 
     async def _worker(self) -> None:
         while True:
@@ -326,16 +372,23 @@ class Daemon:
         the user's first prompt doesn't eat the ~1s cold path. The model load is
         cheap; the real cost is onnxruntime's first inference, which a cached
         index never triggers — so we embed once here. Best-effort: any failure
-        just defers the cost to the first real skill_query."""
-        if self.skills is None:
-            return
-        try:
-            ok = await asyncio.to_thread(self.skills.ensure_ready)
-            if ok:
-                await asyncio.to_thread(self.skills.query, "warmup")
-            logger.info("skills: prewarm {}", "ready" if ok else "unavailable")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("skills: prewarm failed ({})", exc)
+        just defers the cost to the first real query."""
+        if self.skills is not None:
+            try:
+                ok = await asyncio.to_thread(self.skills.ensure_ready)
+                if ok:
+                    await asyncio.to_thread(self.skills.query, "warmup")
+                logger.info("skills: prewarm {}", "ready" if ok else "unavailable")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("skills: prewarm failed ({})", exc)
+        if self.mcp is not None:
+            try:
+                ok = await asyncio.to_thread(self.mcp.ensure_ready)
+                if ok:
+                    await asyncio.to_thread(self.mcp.query, "warmup")
+                logger.info("mcp: prewarm {}", "ready" if ok else "unavailable")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("mcp: prewarm failed ({})", exc)
 
     async def run(self) -> None:
         await self.health.start()
@@ -346,7 +399,11 @@ class Daemon:
                 Path(self.cfg.paths.socket),
                 self._on_event,
                 on_cancel=self.cancel_session,
-                on_query=self._on_query if self.skills is not None else None,
+                on_query=(
+                    self._on_query
+                    if self.skills is not None or self.mcp is not None
+                    else None
+                ),
             )
         finally:
             worker_task.cancel()

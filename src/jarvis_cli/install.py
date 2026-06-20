@@ -850,6 +850,10 @@ def main() -> int:
 
     _add_skills_subparser(sub)
 
+    from .mcp.cli import add_subparser as _add_mcp_subparser
+
+    _add_mcp_subparser(sub)
+
     args = parser.parse_args()
     return args.func(args)
 

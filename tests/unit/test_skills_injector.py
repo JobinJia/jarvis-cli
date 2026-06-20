@@ -66,3 +66,19 @@ def test_total_char_budget_truncates_set(tmp_path):
     )
     # second body would blow the budget, so only the first is kept
     assert len(res.injected_keys) == 1
+
+
+def test_pure_semantic_without_keywords_filtered(tmp_path):
+    # hybrid=0.35, cosine=0.35 → zero lexical boost, cosine < 0.50 → gate rejects
+    m = [Match(_rec("epsilon", tmp_path), 0.35, cosine=0.35)]
+    res = build_injection(m, policy=InjectionPolicy())
+    assert res.mode == "none"
+    assert res.text is None
+
+
+def test_strong_cosine_alone_passes_gate(tmp_path):
+    # hybrid=0.55, cosine=0.55 → no lexical boost, but cosine >= 0.50 → passes
+    m = [Match(_rec("zeta", tmp_path), 0.55, cosine=0.55)]
+    res = build_injection(m, policy=InjectionPolicy())
+    assert res.mode == "body"
+    assert "BODY-CONTENT" in res.text
