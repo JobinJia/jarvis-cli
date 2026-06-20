@@ -54,18 +54,15 @@ def _build_injection(
     high_threshold: float,
     med_threshold: float,
 ) -> str | None:
-    # Gate: require keyword overlap OR very strong cosine. Pure semantic
-    # near-misses ("逻辑" ≈ "reasoning") are filtered out — no threshold
-    # tuning needed, the signal structure decides.
-    gated = [
-        m for m in matches
-        if m.score >= med_threshold
-        and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
-    ]
-    if not gated:
+    """Build injection text from pre-verified candidates.
+
+    Candidates are already gate-filtered and LLM-verified by the daemon;
+    this function only decides the presentation tier (connect vs suggest).
+    """
+    if not matches:
         return None
 
-    strong = [m for m in gated if m.score >= high_threshold]
+    strong = [m for m in matches if m.score >= high_threshold]
     if strong:
         parts: list[str] = []
         for m in strong[:3]:
@@ -80,7 +77,7 @@ def _build_injection(
 
     lines = [
         f"- `{m.record.name}` — {m.record.description}"
-        for m in gated[:5]
+        for m in matches[:5]
     ]
     return _MENU_PREAMBLE + "\n".join(lines)
 
@@ -133,20 +130,24 @@ class McpService:
             self._unavailable = True
 
     def query(self, text: str) -> dict:
-        """Return ``{"context": str|None, "matches": [...]}``.
-        Never raises."""
-        empty: dict = {"context": None, "matches": []}
+        """Return ``{"candidates": [...], "matches": [...]}``.
+
+        ``candidates`` are gate-passed Match objects ready for optional LLM
+        verification. The daemon builds injection text after verification.
+        Never raises.
+        """
+        empty: dict = {"candidates": [], "matches": []}
         if not self.ensure_ready() or self._retriever is None:
             return empty
         try:
             matches = self._retriever.query(text, k=self.cfg.top_k)
-            context = _build_injection(
-                matches,
-                high_threshold=self.cfg.high_threshold,
-                med_threshold=self.cfg.med_threshold,
-            )
+            gated = [
+                m for m in matches
+                if m.score >= self.cfg.med_threshold
+                and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
+            ]
             return {
-                "context": context,
+                "candidates": gated,
                 "matches": [
                     {"name": m.record.name, "score": round(m.score, 4)}
                     for m in matches

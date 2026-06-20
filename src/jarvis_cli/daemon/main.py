@@ -207,9 +207,21 @@ class Daemon:
         logger.debug("QUEUE key={}", dkey)
         await self.queue.put_or_drop(event)
 
+    async def _verify_mcp(self, text: str, candidates: list) -> list:
+        """LLM-verify MCP candidates. Falls back to all candidates on failure."""
+        try:
+            from ..mcp.verifier import verify_candidates
+
+            return await verify_candidates(
+                text, candidates, self.cfg.llm.ollama,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mcp: verification skipped ({})", exc)
+            return candidates
+
     async def _on_query(self, payload: dict) -> dict:
         """Request/response handler for the hook's skill_query / skill_refresh.
-        Now also runs MCP intent matching and merges both contexts.
+        Now also runs MCP intent matching with LLM verification.
         Runs CPU-bound retrieval off the event loop. Never raises."""
         if payload.get("command") == "skill_refresh":
             if self.skills is not None:
@@ -227,12 +239,23 @@ class Daemon:
                 self.skills.query, text, session_id=sid,
             )
 
-        mcp_result: dict = {"context": None, "matches": []}
+        mcp_context: str | None = None
         if self.mcp is not None:
             mcp_result = await asyncio.to_thread(self.mcp.query, text)
+            candidates = mcp_result.get("candidates", [])
+            if candidates:
+                verified = await self._verify_mcp(text, candidates)
+                if verified:
+                    from ..mcp.service import _build_injection
+
+                    mcp_context = _build_injection(
+                        verified,
+                        high_threshold=self.cfg.mcp.high_threshold,
+                        med_threshold=self.cfg.mcp.med_threshold,
+                    )
 
         parts = [
-            p for p in (skill_result.get("context"), mcp_result.get("context"))
+            p for p in (skill_result.get("context"), mcp_context)
             if p
         ]
         merged = "\n\n---\n\n".join(parts) if parts else None
