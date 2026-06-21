@@ -423,6 +423,31 @@ Further reading lives under [`docs/`](docs/):
 
 321+ unit + integration tests under `tests/`. Run with `uv run pytest`.
 
+## Releasing
+
+Releases are cut by pushing a `v*` tag. The [`release` workflow](.github/workflows/release.yml)
+verifies the tag matches the `version` in `pyproject.toml`, builds the sdist +
+wheel with `uv build`, and publishes a GitHub Release with the artifacts and
+auto-generated notes attached.
+
+There is no PyPI publish: the `cosyvoice` extra installs its wheel via a direct
+URL (`allow-direct-references`), which PyPI rejects. Distribution is the source
+tree plus the artifacts attached to each GitHub Release.
+
+```bash
+# bump the version, keep the lockfile in sync, commit
+$EDITOR pyproject.toml                       # e.g. 0.4.0 → 0.4.1
+uv lock
+git commit -am "chore(release): bump 0.4.0 → 0.4.1"
+
+# tag and push — the workflow builds and publishes the release
+git tag -a v0.4.1 -m "v0.4.1 — <highlights>"
+git push origin main v0.4.1
+```
+
+The tag/version guard fails the build when the two disagree, so a mistagged
+release never ships.
+
 ## License
 
 The project code is MIT — see `LICENSE`.

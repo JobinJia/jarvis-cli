@@ -417,6 +417,28 @@ src/jarvis_cli/
 
 `tests/` 下有 321+ 单元 + 集成测试。用 `uv run pytest` 运行。
 
+## 发版
+
+通过推送 `v*` tag 来发版。[`release` workflow](.github/workflows/release.yml)
+会校验 tag 与 `pyproject.toml` 里的 `version` 一致,用 `uv build` 构建 sdist +
+wheel,并发布一个带产物和自动生成 release notes 的 GitHub Release。
+
+不发 PyPI:`cosyvoice` extra 通过直链 URL 安装 wheel(`allow-direct-references`),
+而 PyPI 不接受直链依赖。分发方式是源码树加上每个 GitHub Release 上挂的产物。
+
+```bash
+# 改版本号,同步 lockfile,提交
+$EDITOR pyproject.toml                       # 例如 0.4.0 → 0.4.1
+uv lock
+git commit -am "chore(release): bump 0.4.0 → 0.4.1"
+
+# 打 tag 并推送 —— 剩下的交给 workflow 构建并发布
+git tag -a v0.4.1 -m "v0.4.1 —— <亮点>"
+git push origin main v0.4.1
+```
+
+tag 与版本号不一致时守卫会让构建失败,所以贴错号的版本永远发不出去。
+
 ## 许可
 
 项目代码为 MIT —— 见 `LICENSE`。
