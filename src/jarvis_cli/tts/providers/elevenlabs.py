@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
 
-from ...config import ElevenLabsConfig
+from ...config import ElevenLabsConfig, resolve_api_key
 from ...types import Lang
 from .base import TTSProvider
 
@@ -39,7 +38,7 @@ class ElevenLabsProvider(TTSProvider):
         self.cfg = cfg
 
     def _resolve(self, voice_id: str | None) -> tuple[str, str]:
-        key = os.getenv(self.cfg.api_key_env)
+        key = resolve_api_key(self.cfg)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
         effective_voice = voice_id or self.cfg.voice_id
@@ -114,4 +113,4 @@ class ElevenLabsProvider(TTSProvider):
                         yield chunk
 
     async def healthcheck(self) -> bool:
-        return bool(os.getenv(self.cfg.api_key_env)) and bool(self.cfg.voice_id)
+        return bool(resolve_api_key(self.cfg)) and bool(self.cfg.voice_id)

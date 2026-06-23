@@ -7,9 +7,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def resolve_api_key(cfg: object) -> str | None:
+    """Resolve a provider's API key. An inline ``api_key`` set in config.toml
+    wins; otherwise fall back to the environment variable named by
+    ``api_key_env``. This lets keys live in the TOML alongside the rest of the
+    config instead of the launchd plist's XML — empty/unset inline falls
+    through to the env var, so existing env-based setups keep working."""
+    return getattr(cfg, "api_key", "") or os.getenv(cfg.api_key_env)
+
+
 @dataclass
 class DeepSeekConfig:
     api_key_env: str = "DEEPSEEK_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
     model: str = "deepseek-chat"
     base_url: str = "https://api.deepseek.com"
     timeout_seconds: float = 5.0
@@ -18,6 +28,7 @@ class DeepSeekConfig:
 @dataclass
 class AnthropicConfig:
     api_key_env: str = "ANTHROPIC_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
     model: str = "claude-haiku-4-5-20251001"
     timeout_seconds: float = 5.0
 
@@ -25,6 +36,7 @@ class AnthropicConfig:
 @dataclass
 class OpenAIConfig:
     api_key_env: str = "OPENAI_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
     model: str = "gpt-4o-mini"
     timeout_seconds: float = 5.0
 
@@ -37,13 +49,48 @@ class OllamaConfig:
 
 
 @dataclass
+class ZhipuConfig:
+    """Zhipu AI (智谱) GLM, OpenAI-compatible chat API — a free cloud fallback
+    for phrasing when the local Ollama is down (real-name verification
+    required). Defaults to ``glm-4-flash``: the always-free workhorse, reliable
+    for one-line phrasing. The stronger ``glm-4.7-flash`` is also free but its
+    free tier is frequently rate-limited (HTTP 429 code 1305). Note the
+    endpoint is ``.../paas/v4/chat/completions`` — NO ``/v1`` segment, which is
+    a common 404 trap when reusing OpenAI clients."""
+    api_key_env: str = "ZHIPU_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
+    model: str = "glm-4-flash"
+    base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    timeout_seconds: float = 5.0
+
+
+@dataclass
+class SiliconFlowConfig:
+    """SiliconFlow (硅基流动), OpenAI-compatible chat API — a second free cloud
+    fallback alongside Zhipu (different provider, different rate-limit pool, so
+    one being throttled doesn't take both down). ``Qwen/Qwen2.5-7B-Instruct`` is
+    always-free, plenty for one-line phrasing. China-direct, no proxy. Standard
+    OpenAI endpoint at ``{base_url}/v1/chat/completions``."""
+    api_key_env: str = "SILICONFLOW_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
+    model: str = "Qwen/Qwen2.5-7B-Instruct"
+    base_url: str = "https://api.siliconflow.cn"
+    timeout_seconds: float = 5.0
+
+
+@dataclass
 class LLMConfig:
     provider: str = "deepseek"
+    # Single fallback (back-compat). For a multi-level chain set `fallbacks`
+    # instead — when non-empty it takes precedence over `fallback`.
     fallback: str = "ollama"
+    fallbacks: list[str] = field(default_factory=list)
     deepseek: DeepSeekConfig = field(default_factory=DeepSeekConfig)
     anthropic: AnthropicConfig = field(default_factory=AnthropicConfig)
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    zhipu: ZhipuConfig = field(default_factory=ZhipuConfig)
+    siliconflow: SiliconFlowConfig = field(default_factory=SiliconFlowConfig)
 
 
 @dataclass
@@ -82,6 +129,7 @@ class XTTSConfig:
 @dataclass
 class ElevenLabsConfig:
     api_key_env: str = "ELEVENLABS_API_KEY"
+    api_key: str = ""  # inline key (config.toml); falls back to api_key_env
     voice_id: str = ""
     model: str = "eleven_turbo_v2_5"
 

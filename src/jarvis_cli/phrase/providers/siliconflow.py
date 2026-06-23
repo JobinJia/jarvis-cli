@@ -1,16 +1,21 @@
-"""OpenAI chat-completions provider."""
+"""SiliconFlow (硅基流动) provider — OpenAI-compatible chat API.
+
+A second free cloud fallback alongside Zhipu, on an independent rate-limit
+pool. Standard OpenAI endpoint (``{base_url}/v1/chat/completions``); the key is
+resolved from config.toml's inline ``api_key`` first, else the env var.
+"""
 from __future__ import annotations
 
 import httpx
 
-from ...config import OpenAIConfig, resolve_api_key
+from ...config import SiliconFlowConfig, resolve_api_key
 from .base import PhraseProvider
 
 
-class OpenAIProvider(PhraseProvider):
-    name = "openai"
+class SiliconFlowProvider(PhraseProvider):
+    name = "siliconflow"
 
-    def __init__(self, cfg: OpenAIConfig) -> None:
+    def __init__(self, cfg: SiliconFlowConfig) -> None:
         self.cfg = cfg
 
     async def generate(self, messages: list[dict[str, str]]) -> str:
@@ -18,7 +23,7 @@ class OpenAIProvider(PhraseProvider):
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
         async with httpx.AsyncClient(
-            base_url="https://api.openai.com", timeout=self.cfg.timeout_seconds
+            base_url=self.cfg.base_url, timeout=self.cfg.timeout_seconds
         ) as client:
             r = await client.post(
                 "/v1/chat/completions",

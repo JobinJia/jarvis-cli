@@ -1,11 +1,9 @@
 """Anthropic Claude provider via raw HTTP (avoids SDK pinning issues)."""
 from __future__ import annotations
 
-import os
-
 import httpx
 
-from ...config import AnthropicConfig
+from ...config import AnthropicConfig, resolve_api_key
 from .base import PhraseProvider
 
 
@@ -16,7 +14,7 @@ class AnthropicProvider(PhraseProvider):
         self.cfg = cfg
 
     async def generate(self, messages: list[dict[str, str]]) -> str:
-        key = os.getenv(self.cfg.api_key_env)
+        key = resolve_api_key(self.cfg)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
         system_msg = next(m["content"] for m in messages if m["role"] == "system")
@@ -44,4 +42,4 @@ class AnthropicProvider(PhraseProvider):
         return data["content"][0]["text"].strip()
 
     async def healthcheck(self) -> bool:
-        return bool(os.getenv(self.cfg.api_key_env))
+        return bool(resolve_api_key(self.cfg))

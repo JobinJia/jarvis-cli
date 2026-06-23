@@ -18,6 +18,8 @@ from ..phrase.providers.base import PhraseProvider
 from ..phrase.providers.deepseek import DeepSeekProvider
 from ..phrase.providers.ollama import OllamaProvider
 from ..phrase.providers.openai import OpenAIProvider
+from ..phrase.providers.siliconflow import SiliconFlowProvider
+from ..phrase.providers.zhipu import ZhipuProvider
 from ..phrase.router import PhraseRouter
 from ..player import play, play_stream
 from ..tts.engine import TTSEngine
@@ -40,6 +42,8 @@ def _make_phrase_provider(name: str, cfg: Config) -> PhraseProvider | None:
         "anthropic": lambda: AnthropicProvider(cfg.llm.anthropic),
         "openai": lambda: OpenAIProvider(cfg.llm.openai),
         "ollama": lambda: OllamaProvider(cfg.llm.ollama),
+        "zhipu": lambda: ZhipuProvider(cfg.llm.zhipu),
+        "siliconflow": lambda: SiliconFlowProvider(cfg.llm.siliconflow),
     }
     factory = factories.get(name)
     if factory is None:
@@ -70,9 +74,21 @@ class Daemon:
         self.cfg = cfg
         self.queue = BoundedEventQueue(maxsize=cfg.behavior.queue_max_size)
         self.dedup = DedupWindow(window_seconds=cfg.behavior.dedup_window_seconds)
+        # Build the fallback chain: prefer the multi-level `fallbacks` list,
+        # else wrap the singular `fallback` (back-compat). Unconstructable
+        # providers (missing dep/key) are dropped here; a key-less one that
+        # slips through just raises at call time and the router skips to the
+        # next link.
+        fb_names = cfg.llm.fallbacks or (
+            [cfg.llm.fallback] if cfg.llm.fallback else []
+        )
+        fb_providers = [
+            p for n in fb_names
+            if (p := _make_phrase_provider(n, cfg)) is not None
+        ]
         self.router = PhraseRouter(
             primary=_make_phrase_provider(cfg.llm.provider, cfg),
-            fallback=_make_phrase_provider(cfg.llm.fallback, cfg),
+            fallbacks=fb_providers,
             cfg=cfg,
             on_primary_fallback=self._announce_phrase_fallback,
         )

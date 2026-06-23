@@ -1,11 +1,9 @@
 """DeepSeek-Chat provider (OpenAI-compatible chat API)."""
 from __future__ import annotations
 
-import os
-
 import httpx
 
-from ...config import DeepSeekConfig
+from ...config import DeepSeekConfig, resolve_api_key
 from .base import PhraseProvider
 
 
@@ -16,7 +14,7 @@ class DeepSeekProvider(PhraseProvider):
         self.cfg = cfg
 
     async def generate(self, messages: list[dict[str, str]]) -> str:
-        key = os.getenv(self.cfg.api_key_env)
+        key = resolve_api_key(self.cfg)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
         async with httpx.AsyncClient(
@@ -37,4 +35,4 @@ class DeepSeekProvider(PhraseProvider):
         return data["choices"][0]["message"]["content"].strip()
 
     async def healthcheck(self) -> bool:
-        return bool(os.getenv(self.cfg.api_key_env))
+        return bool(resolve_api_key(self.cfg))

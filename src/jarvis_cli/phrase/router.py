@@ -21,13 +21,22 @@ class PhraseRouter:
     def __init__(
         self,
         primary: PhraseProvider | None,
-        fallback: PhraseProvider | None,
-        cfg: Config,
+        fallback: PhraseProvider | None = None,
+        cfg: Config | None = None,
         *,
+        fallbacks: list[PhraseProvider] | None = None,
         on_primary_fallback: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.primary = primary
-        self.fallback = fallback
+        # Fallback chain: each is tried in order after the primary, so one free
+        # cloud provider being rate-limited (e.g. Zhipu 1305) falls through to
+        # the next instead of straight to the template. `fallbacks` wins; the
+        # singular `fallback` arg is kept for back-compat (wrapped into a list).
+        self.fallbacks: list[PhraseProvider] = (
+            list(fallbacks)
+            if fallbacks is not None
+            else ([fallback] if fallback is not None else [])
+        )
         self.cfg = cfg
         # Fires exactly when the primary provider failed/empty AND the
         # fallback then produced a usable phrase — i.e. the moment a
@@ -61,14 +70,17 @@ class PhraseRouter:
             if event.notification_type == "idle_prompt" else None,
         )
         primary_failed = False
-        for i, provider in enumerate((self.primary, self.fallback)):
+        for i, provider in enumerate([self.primary, *self.fallbacks]):
             if provider is None:
                 continue
             try:
                 out = await provider.generate(messages)
                 if out and out.strip():
+                    # Any fallback (i > 0) producing a phrase after the primary
+                    # failed means we quietly slipped onto a cloud path — fire
+                    # the alert once (only on the level that actually answers).
                     if (
-                        i == 1
+                        i > 0
                         and primary_failed
                         and self._on_primary_fallback is not None
                         and self.primary is not None

@@ -102,6 +102,50 @@ async def test_router_does_not_invoke_callback_when_primary_healthy():
 
 
 @pytest.mark.asyncio
+async def test_router_chain_skips_throttled_fallback_to_next():
+    """Multi-level chain: primary down, first cloud fallback down (e.g. Zhipu
+    1305), second fallback answers. The router walks the whole chain and fires
+    the cloud-slip alert exactly once."""
+    primary = _Stub("ollama", "fail")
+    fb1, fb2 = _Stub("zhipu", "fail"), _Stub("siliconflow", "ok")
+    fired: list[str] = []
+
+    async def on_fallback(primary_name: str) -> None:
+        fired.append(primary_name)
+
+    router = PhraseRouter(
+        primary, cfg=Config(), fallbacks=[fb1, fb2],
+        on_primary_fallback=on_fallback,
+    )
+    out = await router.phrase(_ev(), lang="en")
+    assert out == "<siliconflow>"
+    assert (primary.calls, fb1.calls, fb2.calls) == (1, 1, 1)
+    assert fired == ["ollama"]
+
+
+@pytest.mark.asyncio
+async def test_router_chain_stops_at_first_healthy_fallback():
+    """Chain short-circuits: the second fallback is never called once the
+    first one answers."""
+    primary = _Stub("ollama", "fail")
+    fb1, fb2 = _Stub("zhipu", "ok"), _Stub("siliconflow", "ok")
+    router = PhraseRouter(primary, cfg=Config(), fallbacks=[fb1, fb2])
+    out = await router.phrase(_ev(), lang="en")
+    assert out == "<zhipu>"
+    assert fb1.calls == 1
+    assert fb2.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_router_chain_template_when_all_fail():
+    primary = _Stub("ollama", "fail")
+    fb1, fb2 = _Stub("zhipu", "fail"), _Stub("siliconflow", "fail")
+    router = PhraseRouter(primary, cfg=Config(), fallbacks=[fb1, fb2])
+    out = await router.phrase(_ev(), lang="en")
+    assert "Sir" in out
+
+
+@pytest.mark.asyncio
 async def test_router_does_not_invoke_callback_when_both_fail():
     """If both fail and we end up at the template, there's nothing useful
     to alert about — we already produced a degraded result; spamming a
