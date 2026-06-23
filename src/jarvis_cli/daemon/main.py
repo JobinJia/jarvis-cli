@@ -252,51 +252,13 @@ class Daemon:
         text = payload.get("text") or ""
         sid = payload.get("session_id")
 
-        from ..retrieval.verifier import CONFIRMED, UNCLEAR
-
-        # Skills: gate -> LLM-classify -> build. The verifier confirms intent
-        # (drops vocab-only matches like "更新项目库" vs update-deps), says
-        # "none", or "unclear" — and on unclear we inject a clarify note asking
-        # the model to check with the user, never a command.
-        skill_context: str | None = None
-        skill_mode = "none"
-        skill_matches: list = []
-        if self.skills is not None:
-            skill_gate = await asyncio.to_thread(self.skills.gate, text)
-            skill_matches = skill_gate.get("matches", [])
-            candidates = skill_gate.get("candidates", [])
-            if candidates:
-                vr = await self._verify(text, candidates, noun="skill")
-                if vr.status == CONFIRMED and vr.matches:
-                    built = await asyncio.to_thread(
-                        self.skills.build, vr.matches, session_id=sid, query=text,
-                    )
-                    skill_context = built.get("context")
-                    skill_mode = built.get("mode", "none")
-                elif vr.status == UNCLEAR:
-                    built = await asyncio.to_thread(
-                        self.skills.clarify, candidates,
-                    )
-                    skill_context = built.get("context")
-                    skill_mode = built.get("mode", "none")
-
-        mcp_context: str | None = None
-        if self.mcp is not None:
-            mcp_result = await asyncio.to_thread(self.mcp.query, text)
-            candidates = mcp_result.get("candidates", [])
-            if candidates:
-                vr = await self._verify(text, candidates, noun="tool server")
-                from ..mcp.service import _build_clarify, _build_injection
-
-                if vr.status == CONFIRMED and vr.matches:
-                    mcp_context = _build_injection(
-                        vr.matches,
-                        high_threshold=self.cfg.mcp.high_threshold,
-                        med_threshold=self.cfg.mcp.med_threshold,
-                        query=text,
-                    )
-                elif vr.status == UNCLEAR:
-                    mcp_context = _build_clarify(candidates)
+        # Skills and MCP are independent pipelines (separate gate -> verify ->
+        # build). Run them concurrently so a prompt that hits both gates costs
+        # one LLM round-trip of latency, not two.
+        (skill_context, skill_mode, skill_matches), mcp_context = await asyncio.gather(
+            self._skill_context(text, sid),
+            self._mcp_context(text),
+        )
 
         parts = [p for p in (skill_context, mcp_context) if p]
         merged = "\n\n---\n\n".join(parts) if parts else None
@@ -306,6 +268,56 @@ class Daemon:
             "mode": skill_mode,
             "matches": skill_matches,
         }
+
+    async def _skill_context(
+        self, text: str, sid: str | None
+    ) -> tuple[str | None, str, list]:
+        """Skills pipeline: gate -> LLM-classify -> build. Confirmed intent
+        body/menu-injects; "unclear" injects a clarify note (never a command);
+        "none" injects nothing. Returns (context, mode, telemetry matches)."""
+        from ..retrieval.verifier import CONFIRMED, UNCLEAR
+
+        if self.skills is None:
+            return None, "none", []
+        gate = await asyncio.to_thread(self.skills.gate, text)
+        matches = gate.get("matches", [])
+        candidates = gate.get("candidates", [])
+        if not candidates:
+            return None, "none", matches
+        vr = await self._verify(text, candidates, noun="skill")
+        if vr.status == CONFIRMED and vr.matches:
+            built = await asyncio.to_thread(
+                self.skills.build, vr.matches, session_id=sid, query=text,
+            )
+        elif vr.status == UNCLEAR:
+            built = await asyncio.to_thread(self.skills.clarify, candidates)
+        else:
+            return None, "none", matches
+        return built.get("context"), built.get("mode", "none"), matches
+
+    async def _mcp_context(self, text: str) -> str | None:
+        """MCP pipeline: gate -> LLM-classify -> connect/clarify injection.
+        Mirrors _skill_context but returns just the context string."""
+        from ..mcp.service import _build_clarify, _build_injection
+        from ..retrieval.verifier import CONFIRMED, UNCLEAR
+
+        if self.mcp is None:
+            return None
+        result = await asyncio.to_thread(self.mcp.query, text)
+        candidates = result.get("candidates", [])
+        if not candidates:
+            return None
+        vr = await self._verify(text, candidates, noun="tool server")
+        if vr.status == CONFIRMED and vr.matches:
+            return _build_injection(
+                vr.matches,
+                high_threshold=self.cfg.mcp.high_threshold,
+                med_threshold=self.cfg.mcp.med_threshold,
+                query=text,
+            )
+        if vr.status == UNCLEAR:
+            return _build_clarify(candidates)
+        return None
 
     async def _worker(self) -> None:
         while True:

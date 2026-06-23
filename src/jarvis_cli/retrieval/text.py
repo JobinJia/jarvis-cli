@@ -16,21 +16,30 @@ def deslug(text: str) -> str:
     return _SEP.sub(" ", _CAMEL.sub(" ", text)).strip()
 
 
-def lexical_tokens(text: str) -> set[str]:
-    """Extract ASCII words (>=2 chars), CJK runs, and CJK bigrams.
+def tokenize(text: str) -> tuple[set[str], set[str]]:
+    """Single ``_TOKEN`` pass → ``(whole_word_tokens, lexical_tokens)``.
 
-    CJK text has no whitespace word boundaries, so a query like
-    "帮我看下之前的会话" is one contiguous run and would never intersect
-    a keyword token "会话".  Extracting overlapping bigrams from long CJK
-    runs recovers those matches without affecting ASCII tokens.
+    *whole* is ASCII words (>=2 chars) and complete CJK runs. *lexical* is
+    *whole* plus overlapping CJK bigrams: CJK text has no whitespace word
+    boundaries, so a query like "帮我看下之前的会话" is one contiguous run that
+    would never intersect a keyword token "会话" — the bigrams recover those
+    matches. Callers needing both sets (the retriever, per query and per
+    record) get them from one scan instead of tokenizing the text twice.
     """
-    tokens: set[str] = set()
+    whole: set[str] = set()
+    lexical: set[str] = set()
     for m in _TOKEN.findall((text or "").lower()):
-        tokens.add(m)
+        whole.add(m)
+        lexical.add(m)
         if len(m) > 2 and not m.isascii():
             for i in range(len(m) - 1):
-                tokens.add(m[i : i + 2])
-    return tokens
+                lexical.add(m[i : i + 2])
+    return whole, lexical
+
+
+def lexical_tokens(text: str) -> set[str]:
+    """ASCII words (>=2 chars), CJK runs, and overlapping CJK bigrams."""
+    return tokenize(text)[1]
 
 
 def whole_word_tokens(text: str) -> set[str]:
@@ -38,13 +47,12 @@ def whole_word_tokens(text: str) -> set[str]:
 
     The gate uses this to tell a *substantive* lexical hit from an incidental
     one. A shared proper noun ("vercel", "memex") or an explicitly-listed
-    keyword is a whole word here; the CJK bigrams ``lexical_tokens`` also emits
-    (so "更新文档" can overlap a keyword "文档") are not. Bigram-only overlaps
+    keyword is a whole word here; the CJK bigrams are not. Bigram-only overlaps
     still shape ranking, but must never on their own exempt a match from the
     semantic floor — that is what let common words like "更新"/"项目" drag in
     unrelated skills.
     """
-    return {m for m in _TOKEN.findall((text or "").lower())}
+    return tokenize(text)[0]
 
 
 def is_vague_query(

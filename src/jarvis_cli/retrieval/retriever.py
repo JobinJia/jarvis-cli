@@ -19,7 +19,7 @@ import numpy as np
 
 from .embedder import Embedder
 from .index import Index
-from .text import deslug, lexical_tokens, whole_word_tokens
+from .text import deslug, tokenize
 
 _NAME_HIT_BOOST = 0.22
 _DESC_HIT_STEP = 0.05
@@ -47,16 +47,17 @@ class Retriever:
         self._index = index
         self._name_tokens: list[set[str]] = []
         self._desc_tokens: list[set[str]] = []
-        # Whole-word counterparts (no bigrams) for the gate's signal test.
-        self._name_whole: list[set[str]] = []
-        self._desc_whole: list[set[str]] = []
+        # Combined name+desc whole-word tokens (no bigrams) for the gate's
+        # signal test — the query side only ever ORs the two, so store one set.
+        self._whole: list[set[str]] = []
         for r in index.records:
             name_ds = deslug(r.name)
             desc_kw = r.description + " " + " ".join(r.keywords)
-            self._name_tokens.append(lexical_tokens(name_ds))
-            self._desc_tokens.append(lexical_tokens(desc_kw))
-            self._name_whole.append(whole_word_tokens(name_ds))
-            self._desc_whole.append(whole_word_tokens(desc_kw))
+            name_whole, name_lex = tokenize(name_ds)
+            desc_whole, desc_lex = tokenize(desc_kw)
+            self._name_tokens.append(name_lex)
+            self._desc_tokens.append(desc_lex)
+            self._whole.append(name_whole | desc_whole)
 
     @property
     def size(self) -> int:
@@ -79,8 +80,7 @@ class Retriever:
             return []
         qv = self._embedder.embed_one(text)
         cosine = self._index.vectors @ qv
-        qtok = lexical_tokens(text)
-        qwhole = whole_word_tokens(text)
+        qwhole, qtok = tokenize(text)
         hybrid = cosine + np.array(
             [self._lexical_boost(i, qtok) for i in range(len(cosine))],
             dtype=np.float32,
@@ -93,10 +93,7 @@ class Retriever:
                 self._index.records[i],
                 float(hybrid[i]),
                 float(cosine[i]),
-                whole_word=bool(
-                    qwhole & self._name_whole[i]
-                    or qwhole & self._desc_whole[i]
-                ),
+                whole_word=bool(qwhole & self._whole[i]),
             )
             for i in top
         ]

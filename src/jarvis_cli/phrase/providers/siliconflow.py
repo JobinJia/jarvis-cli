@@ -1,14 +1,13 @@
 """SiliconFlow (硅基流动) provider — OpenAI-compatible chat API.
 
 A second free cloud fallback alongside Zhipu, on an independent rate-limit
-pool. Standard OpenAI endpoint (``{base_url}/v1/chat/completions``); the key is
-resolved from config.toml's inline ``api_key`` first, else the env var.
+pool. Standard OpenAI endpoint (``/v1/chat/completions``); the key is resolved
+from config.toml's inline ``api_key`` first, else the env var.
 """
 from __future__ import annotations
 
-import httpx
-
 from ...config import SiliconFlowConfig, resolve_api_key
+from ._openai_compat import chat_completion
 from .base import PhraseProvider
 
 
@@ -22,22 +21,14 @@ class SiliconFlowProvider(PhraseProvider):
         key = resolve_api_key(self.cfg)
         if not key:
             raise RuntimeError(f"{self.cfg.api_key_env} not set")
-        async with httpx.AsyncClient(
-            base_url=self.cfg.base_url, timeout=self.cfg.timeout_seconds
-        ) as client:
-            r = await client.post(
-                "/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={
-                    "model": self.cfg.model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 80,
-                },
-            )
-            r.raise_for_status()
-            data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return await chat_completion(
+            base_url=self.cfg.base_url,
+            path="/v1/chat/completions",
+            api_key=key,
+            model=self.cfg.model,
+            messages=messages,
+            timeout_seconds=self.cfg.timeout_seconds,
+        )
 
     async def healthcheck(self) -> bool:
         return bool(resolve_api_key(self.cfg))

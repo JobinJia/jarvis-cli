@@ -130,18 +130,17 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         return 0
 
     # query
-    from .service import _has_lexical_signal, _COSINE_SOLO_FLOOR
+    from ..retrieval.retriever import gate_matches
 
     retriever = Retriever(embedder, index)
     text = " ".join(args.text)
     matches = retriever.query(text, k=cfg.mcp.top_k)
+    gated_ids = {
+        id(m) for m in gate_matches(matches, med_threshold=cfg.mcp.med_threshold)
+    }
     print(f"query: {text!r}")
     for m in matches:
-        gated = (
-            m.score >= cfg.mcp.med_threshold
-            and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
-        )
-        if not gated:
+        if id(m) not in gated_ids:
             tier = "—"
         elif m.score >= cfg.mcp.high_threshold:
             tier = "CONNECT"
