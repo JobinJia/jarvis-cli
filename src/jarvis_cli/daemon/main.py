@@ -12,6 +12,7 @@ from loguru import logger
 
 from ..briefing import WeatherCache, compose_briefing
 from ..config import DEFAULT_CONFIG_PATH, Config, load_config
+from ..notify import webhook as webhook_notify
 from ..phrase.language import detect_for
 from ..phrase.providers.anthropic import AnthropicProvider
 from ..phrase.providers.base import PhraseProvider
@@ -101,6 +102,9 @@ class Daemon:
             state_getter=self._snapshot,
         )
         self._last_text: str | None = None
+        # Keep strong refs to in-flight webhook tasks so they aren't garbage
+        # collected mid-flight (asyncio only holds weak refs to tasks).
+        self._webhook_tasks: set[asyncio.Task] = set()
         self._current_proc: asyncio.subprocess.Process | None = None
         self._current_session_id: str | None = None
         self._cancelled_sessions: set[str] = set()
@@ -359,6 +363,13 @@ class Daemon:
                 )
                 text = await self.router.phrase(event, lang=lang)
             self._last_text = text
+            # Remote push (opt-in). Fire-and-forget as a detached task so the
+            # network call runs CONCURRENTLY with audio playback below and can
+            # never delay or block TTS. `text` is the final spoken line — for
+            # LLM-phrased events it was built from an already-redacted summary
+            # (notify.webhook itself is fail-soft and never raises).
+            if self.cfg.webhook.enabled:
+                self._fire_webhook(event, text)
             # Phrasing/briefing above can take seconds (LLM round-trip). If the
             # user already acted on this session in that window, the line is
             # stale — drop it before any play proc starts rather than speak a
@@ -411,6 +422,16 @@ class Daemon:
             self._current_session_id = None
             if sid:
                 self._cancelled_sessions.discard(sid)
+
+    def _fire_webhook(self, event: Event, text: str) -> None:
+        """Schedule the webhook POST as a detached task and track it so it
+        isn't GC'd before completion. notify() is fail-soft (never raises),
+        so the task needs no error handling of its own."""
+        task = asyncio.ensure_future(
+            webhook_notify.notify(self.cfg.webhook, event, text)
+        )
+        self._webhook_tasks.add(task)
+        task.add_done_callback(self._webhook_tasks.discard)
 
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,

@@ -353,6 +353,30 @@ class CostConfig:
 
 
 @dataclass
+class WebhookConfig:
+    """Optional remote push of the spoken line to a webhook (Bark / ntfy /
+    Slack / Discord / generic POST), so a phone/IM surfaces notifications when
+    the user is away. Opt-in (``enabled=false``) — no behavior change out of
+    the box. The daemon fires this fail-soft and non-blocking: a webhook error
+    never touches local audio. See notify/webhook.py for the payload shape.
+    """
+    enabled: bool = False
+    url: str = ""
+    # Static headers sent on every request (e.g. ntfy's `Title`, a content
+    # type, etc). Auth tokens belong in `auth_env`, not here.
+    headers: dict[str, str] = field(default_factory=dict)
+    # Auth header injected from an env var so the token stays out of
+    # config.toml: `auth_header` is the header name (e.g. "Authorization"),
+    # `auth_env` the env var holding its value. Unset env var = header omitted.
+    auth_header: str = ""
+    auth_env: str = ""
+    # Optional allowlist of notification types to push. Empty = push all that
+    # reach the webhook (which are already filtered by behavior.events first).
+    events: list[str] = field(default_factory=list)
+    timeout_seconds: float = 5.0
+
+
+@dataclass
 class PathsConfig:
     socket: str = "~/.jarvis-cli/jarvis.sock"
     log: str = "~/.jarvis-cli/daemon.log"
@@ -368,6 +392,7 @@ class Config:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     cost: CostConfig = field(default_factory=CostConfig)
+    webhook: WebhookConfig = field(default_factory=WebhookConfig)
 
 
 def expanduser(p: str) -> str:
