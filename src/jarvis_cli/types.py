@@ -12,6 +12,12 @@ NotificationType = Literal[
     # New CC/Codex session — daemon composes a Jarvis briefing
     # (greeting + local time + weather) instead of going via the LLM router.
     "session_start",
+    # A tool/command failed (CC PostToolUseFailure). Jarvis speaks a short,
+    # graver-toned line naming the failed tool + the error gist.
+    "tool_failure",
+    # Claude finished responding (CC Stop). Jarvis gives a brief completion
+    # line. Fires often, so leans on the dedup window to stay quiet.
+    "task_complete",
 ]
 
 Lang = Literal["zh", "en"]

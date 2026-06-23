@@ -186,6 +186,33 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
             "cwd": payload.get("cwd"),
             "session_id": None,
         }
+    # A tool/command failed. CC fires `PostToolUseFailure` carrying the
+    # tool name + a `tool_response` (error gist). We forward the raw
+    # tool_input/tool_response so the daemon's extract() can summarize it;
+    # phrasing (grave tone) happens in the daemon, not here.
+    if hook_event == "PostToolUseFailure":
+        ti = payload.get("tool_input") or {}
+        resp = payload.get("tool_response")
+        if isinstance(resp, dict) or isinstance(resp, str):
+            ti = {**ti, "tool_response": resp}
+        return {
+            "notification_type": "tool_failure",
+            "tool_name": payload.get("tool_name"),
+            "tool_input": ti,
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # Claude finished responding. CC fires `Stop` (and `SubagentStop` for a
+    # finished sub-agent turn). A brief completion line; dedup keeps it from
+    # chattering when several Stops land in one window.
+    if hook_event in ("Stop", "SubagentStop"):
+        return {
+            "notification_type": "task_complete",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
     if hook_event in ("UserPromptSubmit", "PostToolUse"):
         sid = payload.get("session_id")
         if not sid:

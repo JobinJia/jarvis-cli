@@ -48,7 +48,14 @@ def _is_our_hook(hook: dict) -> bool:
     return Path(hook.get("command", "")).name == "jarvis-cli-hook"
 
 
-_OUR_HOOK_TYPES = ("Notification", "UserPromptSubmit", "PostToolUse", "SessionStart")
+_OUR_HOOK_TYPES = (
+    "Notification",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SessionStart",
+    "Stop",
+)
 
 
 def merge_claude_settings(existing: dict, hook_command: str) -> dict:
@@ -130,6 +137,19 @@ def _render_codex_block(hook_command: str) -> str:
         "\n"
         "[[hooks.PostToolUse]]\n"
         "[[hooks.PostToolUse.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.PostToolUseFailure]]\n"
+        'matcher = ".*"\n'
+        "[[hooks.PostToolUseFailure.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.Stop]]\n"
+        "[[hooks.Stop.hooks]]\n"
         'type = "command"\n'
         f'command = "{hook_command}"\n'
         "timeout = 5\n"
@@ -534,6 +554,9 @@ def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = N
             "elicitation_dialog",
             "ask_user_question",
             "session_start",
+            "tool_failure",
+            # "task_complete" fires after every assistant turn — opt in by
+            # adding it here to hear a brief "All done, sir."
         ]
         phrase_target_chars = 70
         phrase_hard_cap = 120

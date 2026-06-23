@@ -1,4 +1,4 @@
-from jarvis_cli.phrase.extract import extract
+from jarvis_cli.phrase.extract import extract, extract_failure
 
 
 def test_extract_empty_input_returns_empty():
@@ -173,3 +173,49 @@ def test_extract_askuserquestion_truncates_overlong_fields():
     )
     # Each field is capped so the prompt stays bounded.
     assert len(out) <= 400
+
+
+# --- extract_failure (tool_failure events) ----------------------------------
+
+
+def test_extract_failure_combines_tool_action_and_error_gist():
+    out = extract_failure(
+        "Bash",
+        {"command": "npm test", "tool_response": {"error": "3 tests failed"}},
+    )
+    assert "Bash failed" in out
+    assert "npm test" in out
+    assert "3 tests failed" in out
+
+
+def test_extract_failure_accepts_string_tool_response():
+    out = extract_failure(
+        "Bash", {"command": "make", "tool_response": "exit code 2"}
+    )
+    assert "Bash failed" in out
+    assert "exit code 2" in out
+
+
+def test_extract_failure_falls_back_to_stderr_then_stdout():
+    out = extract_failure("Bash", {"tool_response": {"stderr": "boom"}})
+    assert "boom" in out
+    out2 = extract_failure("Bash", {"tool_response": {"stdout": "noisy"}})
+    assert "noisy" in out2
+
+
+def test_extract_failure_without_tool_response_still_names_tool():
+    out = extract_failure("Edit", {"file_path": "/a/b/foo.py"})
+    assert "Edit failed" in out
+    assert "foo.py" in out
+
+
+def test_extract_failure_caps_long_error():
+    out = extract_failure(
+        "Bash", {"tool_response": {"error": "x" * 500}}
+    )
+    assert len(out) <= 200
+
+
+def test_extract_failure_empty_returns_empty_when_no_tool():
+    assert extract_failure(None, {}) == ""
+    assert extract_failure(None, None) == ""

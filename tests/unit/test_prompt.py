@@ -108,3 +108,42 @@ def test_build_messages_default_humor_level_is_light_wit():
                           target_chars=70, hard_cap=120)
     sys_msg = msgs[0]["content"]
     assert "hint of dry wit" in sys_msg
+
+
+# --- tool_failure / task_complete tone clauses ------------------------------
+
+
+def test_build_messages_tool_failure_biases_grave_and_concise():
+    msgs = build_messages(
+        _ev(notification_type="tool_failure", tool_name="Bash"),
+        lang="en", summary="Bash failed: npm test: 3 tests failed",
+        target_chars=70, hard_cap=120,
+    )
+    sys_msg = msgs[0]["content"]
+    assert "FAILURE" in sys_msg
+    assert "no banter" in sys_msg.lower() or "no jokes" in sys_msg.lower()
+    # The error gist must reach the user blob.
+    assert "3 tests failed" in msgs[-1]["content"]
+
+
+def test_build_messages_task_complete_biases_brief():
+    msgs = build_messages(
+        _ev(notification_type="task_complete", tool_name=None),
+        lang="en", summary="", target_chars=70, hard_cap=120,
+    )
+    sys_msg = msgs[0]["content"]
+    assert "COMPLETION" in sys_msg
+    assert "brief" in sys_msg.lower()
+
+
+def test_build_messages_failure_and_complete_are_mutually_exclusive_clauses():
+    fail = build_messages(
+        _ev(notification_type="tool_failure"), lang="en", summary="",
+        target_chars=70, hard_cap=120,
+    )[0]["content"]
+    done = build_messages(
+        _ev(notification_type="task_complete", tool_name=None), lang="en",
+        summary="", target_chars=70, hard_cap=120,
+    )[0]["content"]
+    assert "FAILURE" in fail and "COMPLETION" not in fail
+    assert "COMPLETION" in done and "FAILURE" not in done

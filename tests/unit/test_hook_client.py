@@ -523,6 +523,86 @@ def test_forward_event_codex_permission_request_with_cancel_disabled(tmp_path: P
     assert row["notification_type"] == "permission_prompt"
 
 
+def test_forward_event_post_tool_use_failure_becomes_tool_failure(tmp_path: Path):
+    """CC's PostToolUseFailure → tool_failure event, carrying the tool name,
+    the original tool_input, and the error gist under tool_response so the
+    daemon's extract_failure() can summarize it."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": "sess-1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "npm test"},
+        "tool_response": {"error": "3 tests failed"},
+        "cwd": "/x",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "tool_failure"
+    assert row["tool_name"] == "Bash"
+    assert row["tool_input"]["command"] == "npm test"
+    assert row["tool_input"]["tool_response"] == {"error": "3 tests failed"}
+    assert row["cwd"] == "/x"
+    assert "text" not in row  # daemon phrases it, hook does not pre-bake
+
+
+def test_forward_event_post_tool_use_failure_with_string_response(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "make"},
+        "tool_response": "exit code 2",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "tool_failure"
+    assert row["tool_input"]["tool_response"] == "exit code 2"
+
+
+def test_forward_event_stop_becomes_task_complete(tmp_path: Path):
+    """CC's Stop (Claude finished responding) → task_complete event."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "Stop",
+        "session_id": "sess-2",
+        "cwd": "/x",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "task_complete"
+    assert row["tool_name"] is None
+    assert row["session_id"] == "sess-2"
+    assert row["cwd"] == "/x"
+
+
+def test_forward_event_subagent_stop_also_becomes_task_complete(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {"hook_event_name": "SubagentStop", "session_id": "s", "cwd": "/x"}
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "task_complete"
+
+
+def test_forward_event_post_tool_use_still_cancels_not_failure(tmp_path: Path):
+    """Regression: a successful PostToolUse must still translate to a cancel,
+    not be confused with PostToolUseFailure."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "session_id": "sess-3",
+    }
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path) is True
+    row = _recv_one(received)
+    assert row["command"] == "cancel"
+
+
 class _ExplodingStream:
     """Stream whose read() raising proves the muted path never consumes stdin."""
 

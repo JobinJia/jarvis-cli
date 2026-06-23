@@ -14,6 +14,8 @@ _ZH: dict[str, str] = {
     # session_start normally bypasses the LLM router and is composed by
     # briefing.py; this template is only reached if that path errors out.
     "session_start": "先生，欢迎回来。",
+    "tool_failure": "先生，{tool} 执行失败了。",
+    "task_complete": "先生，已完成。",
 }
 
 _EN: dict[str, str] = {
@@ -22,6 +24,8 @@ _EN: dict[str, str] = {
     "elicitation_dialog": "Sir, a dialog awaits your input.",
     "ask_user_question": "Sir, a question awaits your decision.",
     "session_start": "At your service, sir.",
+    "tool_failure": "Sir, {tool} has failed.",
+    "task_complete": "All done, sir.",
 }
 
 

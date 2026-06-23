@@ -73,6 +73,23 @@ _IDLE_CLAUSE = (
     "reuse the phrasing in 'avoid', and do not copy the example reply."
 )
 
+# Appended for tool_failure: bias toward a grave, concise alert. Keep the
+# wit dialled down regardless of humor_level — a failure is not the moment
+# for banter.
+_FAILURE_CLAUSE = (
+    " This is a FAILURE report: a tool or command just failed. Speak gravely "
+    "and concisely — state what failed and the gist of why, in ONE short "
+    "sentence. No reassurance, no banter, no jokes."
+)
+
+# Appended for task_complete: a brief 'finished' acknowledgement. This fires
+# after every turn, so it must stay terse — a few words, not a sentence.
+_COMPLETE_CLAUSE = (
+    " This is a COMPLETION notice: Claude just finished responding. Reply with "
+    "a very brief acknowledgement of three to six words (e.g. 'All done, sir.'). "
+    "Do not summarise the work; do not ask a question."
+)
+
 
 def _pick_flavor() -> str:
     return random.choice(_IDLE_FLAVORS)
@@ -99,6 +116,12 @@ _FEW_SHOT_ZH = [
      "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: 你想对博客做哪方面的调整 | options: 新增博客文章; 调整主题样式; 更新站点配置; 部署或构建相关"}'},
     {"role": "assistant",
      "content": "先生，他想问博客往哪儿调——选项一：新增文章，选项二：改主题，选项三：更新配置，选项四：部署相关。"},
+    {"role": "user",
+     "content": '{"notification_type":"tool_failure","tool_name":"Bash","summary":"Bash failed: npm test: 3 tests failed"}'},
+    {"role": "assistant", "content": "先生，测试未通过——三个用例失败了。"},
+    {"role": "user",
+     "content": '{"notification_type":"task_complete","tool_name":null,"summary":""}'},
+    {"role": "assistant", "content": "全部办妥，先生。"},
 ]
 
 _FEW_SHOT_EN = [
@@ -123,6 +146,12 @@ _FEW_SHOT_EN = [
      "content": '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: 你想对博客做哪方面的调整 | options: 新增博客文章; 调整主题样式; 更新站点配置; 部署或构建相关"}'},
     {"role": "assistant",
      "content": "Sir, he asks where to focus on the blog — option one: add a post, option two: adjust the theme, option three: update site config, option four: build and deploy."},
+    {"role": "user",
+     "content": '{"notification_type":"tool_failure","tool_name":"Bash","summary":"Bash failed: npm test: 3 tests failed"}'},
+    {"role": "assistant", "content": "Sir, the build failed — three tests did not pass."},
+    {"role": "user",
+     "content": '{"notification_type":"task_complete","tool_name":null,"summary":""}'},
+    {"role": "assistant", "content": "All done, sir."},
 ]
 
 
@@ -165,6 +194,10 @@ def build_messages(
 
     if is_idle:
         sys += _IDLE_CLAUSE
+    elif event.notification_type == "tool_failure":
+        sys += _FAILURE_CLAUSE
+    elif event.notification_type == "task_complete":
+        sys += _COMPLETE_CLAUSE
 
     blob: dict[str, object] = {
         "notification_type": event.notification_type,

@@ -119,3 +119,44 @@ def extract(tool_name: str | None, tool_input: dict[str, Any] | None) -> str:
     if tool_name and tool_name in _EXTRACTORS:
         return _EXTRACTORS[tool_name](tool_input).strip()
     return json.dumps(tool_input, ensure_ascii=False)[:_MAX_RAW]
+
+
+_FAIL_ERR_CAP = 160  # error-gist cap for the grave failure line
+
+
+def _error_gist(resp: Any) -> str:
+    """Pull the most useful error text out of a PostToolUseFailure
+    `tool_response` (CC sends a dict like {"error": "..."} or a bare string)."""
+    if isinstance(resp, str):
+        return resp.strip()[:_FAIL_ERR_CAP]
+    if isinstance(resp, dict):
+        for key in ("error", "stderr", "message", "stdout", "output"):
+            val = resp.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()[:_FAIL_ERR_CAP]
+    return ""
+
+
+def extract_failure(
+    tool_name: str | None, tool_input: dict[str, Any] | None
+) -> str:
+    """Summarise a tool_failure event: failed tool + the error gist.
+
+    The hook stashes CC's `tool_response` under tool_input["tool_response"].
+    We combine the action (reuse the per-tool extractor on the rest of the
+    input, e.g. the bash command) with the error message so the LLM can speak
+    a grave, specific line ("the build failed on the test step")."""
+    ti = dict(tool_input or {})
+    resp = ti.pop("tool_response", None)
+    action = extract(tool_name, ti) if ti else ""
+    gist = _error_gist(resp)
+    parts: list[str] = []
+    if tool_name:
+        parts.append(f"{tool_name} failed")
+    elif not gist and not action:
+        return ""
+    if action:
+        parts.append(action)
+    if gist:
+        parts.append(gist)
+    return ": ".join(parts) if parts else ""
