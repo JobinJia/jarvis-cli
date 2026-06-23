@@ -327,6 +327,32 @@ class McpConfig:
 
 
 @dataclass
+class CostConfig:
+    """Token/cost observability for Claude Code's `statusLine` integration
+    (the `jarvis-cli-statusline` console script). The statusline always prints
+    its compact line; the fields below only govern the OPTIONAL spoken cost
+    milestone announcement, which is OFF by default.
+
+    The cost signal (`cost.total_cost_usd`) is only available from the
+    statusLine stdin payload — Claude Code's notification/lifecycle hooks do
+    NOT carry it. So the milestone is detected in the statusline process (it
+    has the number) and forwarded to the daemon as a pre-baked line; the daemon
+    cannot synthesize this on its own. See statusline.py.
+    """
+    # Master switch for the spoken milestone. False = the statusline still
+    # prints its line but never contacts the daemon (zero added latency).
+    announce_milestones: bool = False
+    # Spend step in USD. Crossing each multiple (1*step, 2*step, …) fires one
+    # announcement. e.g. 2.0 → speaks at $2, $4, $6 …
+    milestone_usd: float = 2.0
+    # Per-session high-water mark of the last announced threshold lives here so
+    # a milestone speaks once, not on every status-line render. Keyed by
+    # session_id (stable for the session's lifetime; unique across sessions —
+    # the doc's recommended cache key).
+    state_dir: str = "~/.jarvis-cli/cost"
+
+
+@dataclass
 class PathsConfig:
     socket: str = "~/.jarvis-cli/jarvis.sock"
     log: str = "~/.jarvis-cli/daemon.log"
@@ -341,6 +367,7 @@ class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    cost: CostConfig = field(default_factory=CostConfig)
 
 
 def expanduser(p: str) -> str:
@@ -386,6 +413,7 @@ def load_config(path: str | Path) -> Config:
     cfg.skills.index_dir = expanduser(cfg.skills.index_dir)
     cfg.mcp.registry_path = expanduser(cfg.mcp.registry_path)
     cfg.mcp.index_dir = expanduser(cfg.mcp.index_dir)
+    cfg.cost.state_dir = expanduser(cfg.cost.state_dir)
     # Clamp humor_level rather than rejecting — a typo in config shouldn't
     # leave the daemon refusing to start.
     cfg.behavior.humor_level = max(0, min(3, int(cfg.behavior.humor_level)))
