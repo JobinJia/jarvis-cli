@@ -1,11 +1,12 @@
 """Turn retrieval results into the text injected as `additionalContext`.
 
-Gated by signal structure, not just a score threshold:
-  * A match must have lexical signal (keyword/name overlap with the query)
-    OR very strong cosine (>= 0.50) to pass the gate at all — pure semantic
-    near-misses are filtered out regardless of score.
-  * Among gated matches: strong -> inject the full skill body; medium ->
-    inject a one-line menu; weak -> nothing.
+Gated by signal structure, not just a score threshold (see ``gate_matches`` in
+``retrieval.retriever``): a match needs a whole-word lexical signal OR a strong
+standalone cosine to pass at all. Among gated matches the presentation tiers:
+  * strong + intent-confirmed -> inject the full skill body as instructions;
+  * strong but the prompt is too vague to command (no named target) -> menu;
+  * medium -> a one-line menu;
+  * verifier said "unclear" -> a clarify note telling the model to ask first.
 
 Bodies already injected earlier in the session are skipped: CC keeps an
 injected message for the rest of the session, so re-injecting is wasted
@@ -16,15 +17,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..retrieval.text import is_vague_query
 from .loader import load_body
-from .retriever import Match
-
-_COSINE_SOLO_FLOOR = 0.50
-
-
-def _has_lexical_signal(m: Match) -> bool:
-    """True when the keyword / name boost contributed to the hybrid score."""
-    return m.score - m.cosine > 1e-4
+from .retriever import Match, gate_matches  # gate_matches re-exported for callers
 
 
 @dataclass
@@ -52,6 +47,11 @@ _MENU_PREAMBLE = (
     "Possibly relevant skills — load one with its slash command or the Skill "
     "tool if it fits:\n"
 )
+_CLARIFY_PREAMBLE = (
+    "Skill(s) below may match this request, but the user's intent is ambiguous. "
+    "Do NOT act on them yet — first ask the user to clarify what they want, then "
+    "decide whether any actually apply:\n"
+)
 
 
 def _oneline(text: str, limit: int = 120) -> str:
@@ -59,24 +59,39 @@ def _oneline(text: str, limit: int = 120) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
+def build_clarify(matches: list[Match]) -> InjectionResult:
+    """Surface ambiguous candidates as a clarify note, not a command. Used when
+    the verifier returns ``unclear`` — the model should ask the user before
+    acting, so "更新一下" never silently fires ``update-deps``."""
+    if not matches:
+        return InjectionResult(text=None, mode="none")
+    lines = [
+        f"- `{m.record.name}` — {_oneline(m.record.description)}"
+        for m in matches[:3]
+    ]
+    return InjectionResult(text=_CLARIFY_PREAMBLE + "\n".join(lines), mode="clarify")
+
+
 def build_injection(
     matches: list[Match],
     *,
     policy: InjectionPolicy | None = None,
     already_injected: set[str] | None = None,
+    query: str | None = None,
 ) -> InjectionResult:
     policy = policy or InjectionPolicy()
     already = already_injected or set()
 
-    gated = [
-        m for m in matches
-        if m.score >= policy.med_threshold
-        and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
-    ]
+    gated = gate_matches(matches, med_threshold=policy.med_threshold)
     if not gated:
         return InjectionResult(text=None, mode="none")
 
     strong = [m for m in gated if m.score >= policy.high_threshold]
+    # Vague-query guard: an ultra-short/generic prompt ("更新一下") must not
+    # command-inject a body unless a whole-word lexical hit names the target
+    # ("部署到 vercel"). Such matches fall back to the menu tier instead.
+    if query is not None and is_vague_query(query):
+        strong = [m for m in strong if m.whole_word]
     strong_fresh = [m for m in strong if m.record.key() not in already]
 
     if strong_fresh:

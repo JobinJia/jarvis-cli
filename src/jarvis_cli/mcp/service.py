@@ -14,7 +14,8 @@ from loguru import logger
 from ..config import McpConfig
 from ..retrieval.embedder import Embedder, EmbedderUnavailable
 from ..retrieval.index import ensure_index
-from ..retrieval.retriever import Match, Retriever
+from ..retrieval.retriever import Match, Retriever, gate_matches
+from ..retrieval.text import is_vague_query
 from .registry import (
     McpServerRecord,
     load_registry,
@@ -32,6 +33,11 @@ _MENU_PREAMBLE = (
     "MCP servers that may help with this request "
     "(connect with ``mcp__mcp-router__mcp_router__add_server`` if needed):\n"
 )
+_CLARIFY_PREAMBLE = (
+    "MCP server(s) below may match this request, but the user's intent is "
+    "ambiguous. Do NOT connect anything yet — first ask the user to clarify "
+    "what they want, then decide whether any apply:\n"
+)
 
 
 def _connect_snippet(rec: McpServerRecord) -> str:
@@ -39,13 +45,13 @@ def _connect_snippet(rec: McpServerRecord) -> str:
     return json.dumps(params, ensure_ascii=False)
 
 
-_COSINE_SOLO_FLOOR = 0.50
-
-
-def _has_lexical_signal(m: Match) -> bool:
-    """True when the keyword / name boost contributed to the hybrid score —
-    i.e. the match isn't ONLY semantic."""
-    return m.score - m.cosine > 1e-4
+def _build_clarify(matches: list[Match]) -> str | None:
+    """Surface ambiguous MCP candidates as a clarify note (verifier said
+    ``unclear``) instead of connect instructions, so the model asks first."""
+    if not matches:
+        return None
+    lines = [f"- `{m.record.name}` — {m.record.description}" for m in matches[:5]]
+    return _CLARIFY_PREAMBLE + "\n".join(lines)
 
 
 def _build_injection(
@@ -53,16 +59,20 @@ def _build_injection(
     *,
     high_threshold: float,
     med_threshold: float,
+    query: str | None = None,
 ) -> str | None:
-    """Build injection text from pre-verified candidates.
+    """Build injection text from intent-confirmed candidates.
 
     Candidates are already gate-filtered and LLM-verified by the daemon;
     this function only decides the presentation tier (connect vs suggest).
+    A vague prompt with no named target is held back from the connect tier.
     """
     if not matches:
         return None
 
     strong = [m for m in matches if m.score >= high_threshold]
+    if query is not None and is_vague_query(query):
+        strong = [m for m in strong if m.whole_word]
     if strong:
         parts: list[str] = []
         for m in strong[:3]:
@@ -141,11 +151,7 @@ class McpService:
             return empty
         try:
             matches = self._retriever.query(text, k=self.cfg.top_k)
-            gated = [
-                m for m in matches
-                if m.score >= self.cfg.med_threshold
-                and (_has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR)
-            ]
+            gated = gate_matches(matches, med_threshold=self.cfg.med_threshold)
             return {
                 "candidates": gated,
                 "matches": [

@@ -16,8 +16,13 @@ from ..config import SkillsConfig
 from .catalog import scan_skills
 from .embedder import Embedder, EmbedderUnavailable
 from .index import ensure_index
-from .injector import InjectionPolicy, build_injection
-from .retriever import SkillRetriever
+from .injector import (
+    InjectionPolicy,
+    build_clarify,
+    build_injection,
+    gate_matches,
+)
+from .retriever import Match, SkillRetriever
 
 # Cap how many sessions we remember injected-skill state for, so a long-lived
 # daemon doesn't grow unbounded across many CC/Codex tabs.
@@ -85,27 +90,85 @@ class SkillService:
         cur.update(keys)
         self._injected.move_to_end(session_id)
 
-    def query(self, text: str, *, session_id: str | None = None) -> dict:
-        """Return {"context": str|None, "mode": str, "matches": [...]}.
-        Never raises — on any failure returns an empty (no-injection) result."""
-        empty = {"context": None, "mode": "none", "matches": []}
+    def gate(self, text: str) -> dict:
+        """Retrieve + structural gate. Returns
+        ``{"candidates": [Match...], "matches": [...]}``.
+
+        ``candidates`` are gate-passed Match objects ready for optional LLM
+        verification; the daemon builds injection text via ``build`` after
+        verification. ``matches`` is the full retrieval list for telemetry.
+        Never raises."""
+        empty: dict = {"candidates": [], "matches": []}
         if not self.ensure_ready() or self._retriever is None:
             return empty
         try:
             matches = self._retriever.query(text, k=self.cfg.top_k)
-            already = self._injected.get(session_id or "", set())
-            result = build_injection(
-                matches, policy=self._policy, already_injected=already
+            candidates = gate_matches(
+                matches, med_threshold=self._policy.med_threshold
             )
-            self._remember(session_id, result.injected_keys)
             return {
-                "context": result.text,
-                "mode": result.mode,
+                "candidates": candidates,
                 "matches": [
                     {"name": m.record.name, "score": round(m.score, 4)}
                     for m in matches
                 ],
             }
         except Exception as exc:  # noqa: BLE001 — hook must never break the prompt
-            logger.warning("skills: query failed ({})", exc)
+            logger.warning("skills: gate failed ({})", exc)
             return empty
+
+    def build(
+        self,
+        candidates: list[Match],
+        *,
+        session_id: str | None = None,
+        query: str | None = None,
+    ) -> dict:
+        """Build injection text from intent-confirmed candidates. Applies the
+        body/menu tiering, the vague-query guard (via *query*) and per-session
+        dedup, then records what was injected. Returns
+        ``{"context": str|None, "mode": str}``. Never raises.
+
+        Candidates are a subset of what ``gate`` returned, so the gate inside
+        ``build_injection`` re-passes them unchanged."""
+        empty: dict = {"context": None, "mode": "none"}
+        if not candidates:
+            return empty
+        try:
+            already = self._injected.get(session_id or "", set())
+            result = build_injection(
+                candidates,
+                policy=self._policy,
+                already_injected=already,
+                query=query,
+            )
+            self._remember(session_id, result.injected_keys)
+            return {"context": result.text, "mode": result.mode}
+        except Exception as exc:  # noqa: BLE001 — hook must never break the prompt
+            logger.warning("skills: build failed ({})", exc)
+            return empty
+
+    def clarify(self, candidates: list[Match]) -> dict:
+        """Render ambiguous candidates as a clarify note (verifier said
+        ``unclear``). No body, no dedup — the model is told to ask the user
+        first. Returns ``{"context": str|None, "mode": str}``. Never raises."""
+        try:
+            result = build_clarify(candidates)
+            return {"context": result.text, "mode": result.mode}
+        except Exception as exc:  # noqa: BLE001 — hook must never break the prompt
+            logger.warning("skills: clarify failed ({})", exc)
+            return {"context": None, "mode": "none"}
+
+    def query(self, text: str, *, session_id: str | None = None) -> dict:
+        """Convenience: gate + build with no LLM verification. Used for daemon
+        warmup; the live request path goes through ``gate`` -> verifier ->
+        ``build`` so it can drop vocabulary-only false positives."""
+        gated = self.gate(text)
+        built = self.build(
+            gated["candidates"], session_id=session_id, query=text
+        )
+        return {
+            "context": built["context"],
+            "mode": built["mode"],
+            "matches": gated["matches"],
+        }

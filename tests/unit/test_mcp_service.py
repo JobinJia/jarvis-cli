@@ -1,17 +1,13 @@
-"""Test MCP service: gate logic (McpService.query) and injection building.
+"""Test MCP service: gate logic and injection building.
 
-Match(record, hybrid_score, cosine) -- the lexical boost is the delta
-between hybrid and cosine.  The gate in McpService.query requires lexical
-signal (boost > 0) OR cosine >= 0.50; _build_injection receives
-pre-filtered candidates from the daemon.
+Match(record, hybrid_score, cosine, whole_word) -- the gate (shared
+``gate_matches``) requires a whole-word lexical hit OR cosine >= 0.50; a
+bigram-only overlap on a common word no longer qualifies. ``_build_injection``
+receives pre-filtered, intent-confirmed candidates from the daemon.
 """
 from jarvis_cli.mcp.registry import McpServerRecord
-from jarvis_cli.mcp.service import (
-    _build_injection,
-    _has_lexical_signal,
-    _COSINE_SOLO_FLOOR,
-)
-from jarvis_cli.retrieval.retriever import Match
+from jarvis_cli.mcp.service import _build_clarify, _build_injection
+from jarvis_cli.retrieval.retriever import Match, gate_matches
 
 
 def _rec(name: str, desc: str = "test server", **connect_kw) -> McpServerRecord:
@@ -22,21 +18,26 @@ def _rec(name: str, desc: str = "test server", **connect_kw) -> McpServerRecord:
 
 
 def _passes_gate(m: Match, med: float = 0.22) -> bool:
-    return m.score >= med and (
-        _has_lexical_signal(m) or m.cosine >= _COSINE_SOLO_FLOOR
-    )
+    return bool(gate_matches([m], med_threshold=med))
 
 
 # -- Gate logic tests --
 
-def test_gate_passes_with_lexical_signal():
-    m = Match(_rec("memex"), 0.30, cosine=0.08)
+def test_gate_passes_with_wholeword_signal():
+    m = Match(_rec("memex"), 0.30, cosine=0.08, whole_word=True)
     assert _passes_gate(m)
 
 
 def test_gate_passes_with_strong_cosine():
     m = Match(_rec("memex"), 0.55, cosine=0.55)
     assert _passes_gate(m)
+
+
+def test_gate_rejects_bigram_only_overlap():
+    # boost lifted the hybrid score, but no whole-word hit and cosine < 0.50:
+    # a common-word bigram overlap must not pass.
+    m = Match(_rec("memex"), 0.30, cosine=0.08, whole_word=False)
+    assert not _passes_gate(m)
 
 
 def test_gate_rejects_pure_semantic():
@@ -92,3 +93,39 @@ def test_connect_params_in_snippet():
     ctx = _build_injection(matches, high_threshold=0.35, med_threshold=0.22)
     assert '"command": "npx"' in ctx
     assert '"args": ["my-mcp"]' in ctx
+
+
+# -- Vague-query guard: a thin prompt with no named target stays off the
+#    connect tier even when the candidate is strong. --
+
+def test_vague_query_demotes_connect_to_menu():
+    matches = [Match(_rec("memex"), 0.9, cosine=0.55, whole_word=False)]
+    ctx = _build_injection(
+        matches, high_threshold=0.35, med_threshold=0.22, query="看一下",
+    )
+    assert ctx is not None
+    assert "**Connect:**" not in ctx  # not the connect/body tier
+    assert "`memex`" in ctx           # menu tier
+
+
+def test_vague_query_keeps_connect_when_target_named():
+    matches = [Match(_rec("memex"), 0.9, cosine=0.55, whole_word=True)]
+    ctx = _build_injection(
+        matches, high_threshold=0.35, med_threshold=0.22, query="memex 看一下",
+    )
+    assert "**Connect:**" in ctx
+
+
+# -- _build_clarify: ambiguous candidates surfaced as a question --
+
+def test_build_clarify_lists_candidates():
+    matches = [Match(_rec("memex", "session history"), 0.5, cosine=0.3)]
+    ctx = _build_clarify(matches)
+    assert ctx is not None
+    assert "`memex`" in ctx
+    assert "add_server" not in ctx
+    assert "clarify" in ctx.lower()
+
+
+def test_build_clarify_empty_returns_none():
+    assert _build_clarify([]) is None

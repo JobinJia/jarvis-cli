@@ -207,17 +207,20 @@ class Daemon:
         logger.debug("QUEUE key={}", dkey)
         await self.queue.put_or_drop(event)
 
-    async def _verify_mcp(self, text: str, candidates: list) -> list:
-        """LLM-verify MCP candidates. Falls back to all candidates on failure."""
-        try:
-            from ..mcp.verifier import verify_candidates
+    async def _verify(self, text: str, candidates: list, *, noun: str):
+        """LLM-classify intent candidates (skills or MCP). Returns a
+        ``VerifyResult`` with status confirmed/none/unclear. On any error the
+        status is ``unclear`` — we ask the user rather than fabricate a confirm
+        we couldn't actually make."""
+        from ..retrieval.verifier import UNCLEAR, VerifyResult, verify_candidates
 
+        try:
             return await verify_candidates(
-                text, candidates, self.cfg.llm.ollama,
+                text, candidates, self.cfg.llm.ollama, noun=noun,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("mcp: verification skipped ({})", exc)
-            return candidates
+            logger.debug("{}: verification skipped ({})", noun, exc)
+            return VerifyResult(UNCLEAR)
 
     async def _on_query(self, payload: dict) -> dict:
         """Request/response handler for the hook's skill_query / skill_refresh.
@@ -233,37 +236,59 @@ class Daemon:
         text = payload.get("text") or ""
         sid = payload.get("session_id")
 
-        skill_result: dict = {"context": None, "mode": "none", "matches": []}
+        from ..retrieval.verifier import CONFIRMED, UNCLEAR
+
+        # Skills: gate -> LLM-classify -> build. The verifier confirms intent
+        # (drops vocab-only matches like "更新项目库" vs update-deps), says
+        # "none", or "unclear" — and on unclear we inject a clarify note asking
+        # the model to check with the user, never a command.
+        skill_context: str | None = None
+        skill_mode = "none"
+        skill_matches: list = []
         if self.skills is not None:
-            skill_result = await asyncio.to_thread(
-                self.skills.query, text, session_id=sid,
-            )
+            skill_gate = await asyncio.to_thread(self.skills.gate, text)
+            skill_matches = skill_gate.get("matches", [])
+            candidates = skill_gate.get("candidates", [])
+            if candidates:
+                vr = await self._verify(text, candidates, noun="skill")
+                if vr.status == CONFIRMED and vr.matches:
+                    built = await asyncio.to_thread(
+                        self.skills.build, vr.matches, session_id=sid, query=text,
+                    )
+                    skill_context = built.get("context")
+                    skill_mode = built.get("mode", "none")
+                elif vr.status == UNCLEAR:
+                    built = await asyncio.to_thread(
+                        self.skills.clarify, candidates,
+                    )
+                    skill_context = built.get("context")
+                    skill_mode = built.get("mode", "none")
 
         mcp_context: str | None = None
         if self.mcp is not None:
             mcp_result = await asyncio.to_thread(self.mcp.query, text)
             candidates = mcp_result.get("candidates", [])
             if candidates:
-                verified = await self._verify_mcp(text, candidates)
-                if verified:
-                    from ..mcp.service import _build_injection
+                vr = await self._verify(text, candidates, noun="tool server")
+                from ..mcp.service import _build_clarify, _build_injection
 
+                if vr.status == CONFIRMED and vr.matches:
                     mcp_context = _build_injection(
-                        verified,
+                        vr.matches,
                         high_threshold=self.cfg.mcp.high_threshold,
                         med_threshold=self.cfg.mcp.med_threshold,
+                        query=text,
                     )
+                elif vr.status == UNCLEAR:
+                    mcp_context = _build_clarify(candidates)
 
-        parts = [
-            p for p in (skill_result.get("context"), mcp_context)
-            if p
-        ]
+        parts = [p for p in (skill_context, mcp_context) if p]
         merged = "\n\n---\n\n".join(parts) if parts else None
 
         return {
             "context": merged,
-            "mode": skill_result.get("mode", "none"),
-            "matches": skill_result.get("matches", []),
+            "mode": skill_mode,
+            "matches": skill_matches,
         }
 
     async def _worker(self) -> None:
