@@ -13,7 +13,7 @@
    "Sir, that command appears rather drastic."
 ```
 
-默认技术栈**完全本地、零成本**:用 Ollama 组织措辞,用 CosyVoice 3 发声。云端 provider(DeepSeek、ElevenLabs)仅作为可选的 fallback。
+默认技术栈**完全本地、零成本**:用 Ollama 组织措辞,用 CosyVoice 3 发声。本地 LLM 不可达时,措辞会沿一条**免费**云端 provider 链(智谱 GLM、硅基流动)顺延,再到付费的 DeepSeek,最后回落内置模板——发声不中断,也不会冒出意外账单。
 
 ## 工作原理
 
@@ -33,7 +33,7 @@ Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cli-h
                    phrase router                                 TTS engine
               (LLM picks Jarvis line)                       (synthesises audio)
                           │                                           │
-                Ollama → DeepSeek                       CosyVoice 3 → XTTS → say
+     Ollama → SiliconFlow → Zhipu → DeepSeek         CosyVoice 3 → XTTS → say
                                                                       │
                                                                       ▼
                                                                    ffplay / afplay
@@ -56,8 +56,8 @@ Codex CLI 的事件映射与验证步骤见 [`docs/CODEX.md`](docs/CODEX.md);之
 - 已安装并登录的 Claude Code。
 - 至少一个 **LLM** 来源:
   - **Ollama**(推荐,本地且免费),运行 `qwen3:8b` 或类似模型,或
-  - **DeepSeek** API key(云端,非常便宜),或
-  - Anthropic / OpenAI API key。
+  - 一个**免费云端** key —— **智谱** GLM-4-Flash 或**硅基流动** Qwen2.5-7B(均国内直连、OpenAI 兼容),或
+  - **DeepSeek**(云端,非常便宜)/ Anthropic / OpenAI API key。
 - 至少一个 **TTS** 来源:
   - **CosyVoice 3** —— Apache-2.0,本地声音克隆,Apple Silicon Metal 加速(`--extra cosyvoice`,推荐默认),或
   - **XTTS-v2** —— 声音克隆,通过 PyTorch 走 Apple Silicon MPS(`--extra xtts`;权重为 CPML / 非商用),或
@@ -165,17 +165,29 @@ uv run jarvis-cli test --event permission_prompt --tool Bash
 
 ```toml
 [llm]
-provider = "ollama"            # 本地、零成本;deepseek 保留作 fallback
-fallback = "deepseek"
-
-[llm.deepseek]
-api_key_env = "DEEPSEEK_API_KEY"
-model = "deepseek-chat"
+provider = "ollama"            # 本地、零成本
+# 免费优先的 fallback 链;按序尝试,最后回落内置模板。
+# 硅基排第一:免费档是配额型,不像智谱那样会负载限流。
+fallbacks = ["siliconflow", "zhipu", "deepseek"]
 
 [llm.ollama]
 base_url = "http://localhost:11434"
 model = "qwen3:8b"
 timeout_seconds = 30
+
+[llm.zhipu]                    # 免费 GLM-4-Flash(需实名)
+api_key = "..."                # 内联 key,或设 ZHIPU_API_KEY
+model = "glm-4-flash"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+[llm.siliconflow]              # 免费 Qwen2.5-7B;配额型,极少限流
+api_key = "..."                # 内联 key,或设 SILICONFLOW_API_KEY
+model = "Qwen/Qwen2.5-7B-Instruct"
+base_url = "https://api.siliconflow.cn"
+
+[llm.deepseek]                 # 付费但便宜;模板前的最后兜底
+api_key = "..."                # 内联 key,或设 DEEPSEEK_API_KEY
+model = "deepseek-chat"
 
 [tts]
 provider = "cosyvoice"         # Apache-2.0 本地声音克隆
@@ -230,7 +242,7 @@ launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
 ```toml
 [llm]
 provider = "ollama"
-fallback = "deepseek"          # 仅在 Ollama 不可达时触发;贾维斯会出声告知
+fallbacks = ["siliconflow", "zhipu", "deepseek"]   # 仅在 Ollama 不可达时;免费源优先,贾维斯会出声告知
 
 [tts]
 provider = "cosyvoice"

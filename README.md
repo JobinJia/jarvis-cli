@@ -13,7 +13,7 @@ When Claude Code or Codex CLI needs your attention — permission prompts, idle 
    "Sir, that command appears rather drastic."
 ```
 
-The default stack is **fully local, zero-cost**: Ollama for phrasing, CosyVoice 3 for the voice. Cloud providers (DeepSeek, ElevenLabs) are kept as opt-in fallbacks.
+The default stack is **fully local, zero-cost**: Ollama for phrasing, CosyVoice 3 for the voice. When the local LLM is unreachable, phrasing falls through a chain of **free** cloud providers (Zhipu GLM, SiliconFlow) before any paid one (DeepSeek) and finally a built-in template — the voice keeps working without surprise bills.
 
 ## How it works
 
@@ -33,7 +33,7 @@ Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cli-h
                    phrase router                                 TTS engine
               (LLM picks Jarvis line)                       (synthesises audio)
                           │                                           │
-                Ollama → DeepSeek                       CosyVoice 3 → XTTS → say
+     Ollama → SiliconFlow → Zhipu → DeepSeek         CosyVoice 3 → XTTS → say
                                                                       │
                                                                       ▼
                                                                    ffplay / afplay
@@ -58,8 +58,8 @@ swapping providers afterwards.
 - Claude Code installed and authenticated.
 - At least one **LLM** source:
   - **Ollama** (recommended, local & free) running `qwen3:8b` or similar, OR
-  - **DeepSeek** API key (cloud, very cheap), OR
-  - Anthropic / OpenAI API key.
+  - a **free cloud** key — **Zhipu** GLM-4-Flash or **SiliconFlow** Qwen2.5-7B (both China-direct, OpenAI-compatible), OR
+  - **DeepSeek** (cloud, very cheap) / Anthropic / OpenAI API key.
 - At least one **TTS** source:
   - **CosyVoice 3** — Apache-2.0, local voice clone, Apple Silicon Metal (`--extra cosyvoice`, recommended default), OR
   - **XTTS-v2** — voice clone, Apple Silicon MPS via PyTorch (`--extra xtts`; weights under CPML / non-commercial), OR
@@ -171,17 +171,29 @@ Everything lives in `~/.jarvis-cli/config.toml`. The defaults you get after `ins
 
 ```toml
 [llm]
-provider = "ollama"            # local, zero-cost; deepseek kept as fallback
-fallback = "deepseek"
-
-[llm.deepseek]
-api_key_env = "DEEPSEEK_API_KEY"
-model = "deepseek-chat"
+provider = "ollama"            # local, zero-cost
+# Free-first fallback chain; each link tried in order, then a built-in template.
+# SiliconFlow leads: its free tier is quota-based, not load-throttled like Zhipu.
+fallbacks = ["siliconflow", "zhipu", "deepseek"]
 
 [llm.ollama]
 base_url = "http://localhost:11434"
 model = "qwen3:8b"
 timeout_seconds = 30
+
+[llm.zhipu]                    # free GLM-4-Flash (real-name verified)
+api_key = "..."                # inline key, or set ZHIPU_API_KEY
+model = "glm-4-flash"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+[llm.siliconflow]              # free Qwen2.5-7B; quota-based, rarely throttled
+api_key = "..."                # inline key, or set SILICONFLOW_API_KEY
+model = "Qwen/Qwen2.5-7B-Instruct"
+base_url = "https://api.siliconflow.cn"
+
+[llm.deepseek]                 # paid but cheap; last resort before the template
+api_key = "..."                # inline key, or set DEEPSEEK_API_KEY
+model = "deepseek-chat"
 
 [tts]
 provider = "cosyvoice"         # Apache-2.0 local voice clone
@@ -236,7 +248,7 @@ This is the default. Local Ollama for phrasing, local CosyVoice 3 for voice — 
 ```toml
 [llm]
 provider = "ollama"
-fallback = "deepseek"          # only fires if Ollama is unreachable; Jarvis announces it
+fallbacks = ["siliconflow", "zhipu", "deepseek"]   # only when Ollama is down; free clouds first, Jarvis announces it
 
 [tts]
 provider = "cosyvoice"
