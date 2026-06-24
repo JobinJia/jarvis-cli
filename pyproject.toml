@@ -66,7 +66,6 @@ all = [
 jarvis-cli = "jarvis_cli.install:main"
 jarvis-cli-hook = "jarvis_cli.hook_client:main"
 jarvis-cli-daemon = "jarvis_cli.daemon.main:main"
-jarvis-cli-statusline = "jarvis_cli.statusline:main"
 
 [build-system]
 requires = ["hatchling"]
