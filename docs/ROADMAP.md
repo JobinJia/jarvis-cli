@@ -37,7 +37,7 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 | 成本 | 多依赖云端 API | **本地优先、零成本默认**,免费云端多级兜底 |
 
 **护城河**:人格化 + 本地零成本 + 免费 fallback 链 + 通知/路由合一。
-**差距**(竞品有我们没有):hook 事件覆盖少(4/26)、无 webhook 远程通知、无 cost/token 可观测、无 plugin 化分发、无自然语言安装。
+**差距**(竞品有我们没有):hook 事件覆盖少(4/26)、无 plugin 化分发、无自然语言安装。(cost/token 可观测、statusline 这类视觉功能不在我们的目标内 —— 见 §5。)
 
 ---
 
@@ -71,7 +71,6 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 |---|---|---|
 | **更多 hook 事件** | 现只用 4 个,CC 有 ~26 个生命周期。接入 `PostToolUseFailure`(报错语音)、`Stop`(完成播报)、`PreCompact`(上下文压缩提醒)、`SubagentStop`、rate-limit alert | 高,几乎零架构改动 |
 | **报错语音** | 工具失败时 Jarvis 用凝重口吻提示"Sir, the build failed on…" | 高,刚需 |
-| **token/成本播报 + statusline** | 会话花费语音/状态栏(对标 codeburn 8k⭐、CCometixLine) | 中高 |
 | **webhook / 远程通知** | 离开电脑时推手机/IM(对标 echook) | 中 |
 
 ### 中等投入
@@ -93,11 +92,12 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 
 ## 5. 优先级建议(下一步)
 
-按 **价值 ÷ 成本 × 差异化** 排序,建议下一轮迭代先打三个 quick win:
+按 **价值 ÷ 成本 × 差异化** 排序,建议下一轮迭代先打两个 quick win:
 
 1. **报错语音**(`PostToolUseFailure` → 凝重措辞)——刚需、零架构改动、人格化优势直接体现。
 2. **完成播报**(`Stop` 事件)——补齐和 echook 等的基本对位。
-3. **成本播报 + statusline**——高频痛点,生态里最热(codeburn 8k⭐)。
+
+> 视觉/纯数据类功能(状态栏、成本面板)不进主干:jarvis 的主轴是语音/听觉提醒,这类活交给 ccstatusline 等专门工具。
 
 这三个都复用现有 hook→daemon→phrase→TTS 管线,不碰核心架构,且把"人格化"卖点扩展到更多时刻。history-aware 路由与 streaming TTS 作为第二梯队的"做深"项。
 
