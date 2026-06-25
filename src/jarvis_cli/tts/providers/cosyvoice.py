@@ -12,7 +12,10 @@ import wave
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover — numpy is in the cosyvoice extra
+    np = None  # type: ignore[assignment]
 from loguru import logger
 
 from ...config import CosyVoiceConfig

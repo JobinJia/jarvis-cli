@@ -9,7 +9,6 @@ dependencies = [
     "httpx>=0.27",
     "loguru>=0.7",
     "langdetect>=1.0.9",
-    "coqui-tts[codec]>=0.24",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +19,7 @@ dependencies = [
 # `isin_mps_friendly` from `transformers.pytorch_utils`, which was
 # removed in transformers 5.0. Upstream coqui-tts has not adapted yet.
 xtts = [
+    "coqui-tts[codec]>=0.24",
     "torch>=2.2",
     "torchaudio>=2.2",
     "transformers>=4.57,<5",
@@ -29,11 +29,12 @@ xtts = [
 ]
 
 # CosyVoice 3 via the Apache-2.0 Rust+Candle wheel (`cosyvoice3.rs`).
-# Pre-built Metal wheel for Apple Silicon; no PyTorch dependency.
+# The wheel is NOT on PyPI — install it manually from GitHub Releases before
+# activating this extra:
+#   pip install "cosyvoice3 @ https://github.com/SpenserCai/cosyvoice3.rs/releases/download/v0.1.0/cosyvoice3-0.1.0%2Bmetal-cp310-abi3-macosx_11_0_arm64.whl"
 # Other platforms (CUDA/CPU) need their own wheel — see project README
 # at https://github.com/SpenserCai/cosyvoice3.rs/releases.
 cosyvoice = [
-    "cosyvoice3 @ https://github.com/SpenserCai/cosyvoice3.rs/releases/download/v0.1.0/cosyvoice3-0.1.0%2Bmetal-cp310-abi3-macosx_11_0_arm64.whl ; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "numpy>=2.0",
 ]
 
@@ -73,11 +74,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jarvis_cli"]
-
-[tool.hatch.metadata]
-# Required for the `cosyvoice` extra to declare its wheel via a direct URL
-# (the cosyvoice3 Rust+Candle build isn't on PyPI; only on GitHub Releases).
-allow-direct-references = true
 
 [dependency-groups]
 dev = [
