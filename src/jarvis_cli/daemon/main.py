@@ -326,7 +326,17 @@ class Daemon:
     async def _worker(self) -> None:
         while True:
             event = await self.queue.get()
-            await self._process_one(event)
+            # Use the streaming pipeline when the config flag is set AND the
+            # event is an LLM-phrased one (not pre-baked text, not session_start
+            # which has its own compose path).
+            if (
+                self.cfg.behavior.streaming_pipeline
+                and event.text is None
+                and event.notification_type != "session_start"
+            ):
+                await self._process_one_streaming(event)
+            else:
+                await self._process_one(event)
 
     async def _process_one(self, event: Event) -> None:
         sid = event.session_id
@@ -417,6 +427,80 @@ class Daemon:
                 logger.debug("playback cancelled for session {}", sid)
             else:
                 logger.exception("worker failed: {}", exc)
+        finally:
+            self._current_proc = None
+            self._current_session_id = None
+            if sid:
+                self._cancelled_sessions.discard(sid)
+
+    async def _process_one_streaming(self, event: Event) -> None:
+        """Streaming pipeline: overlap LLM → sentence chunking → TTS → play.
+
+        For each sentence the LLM produces, we synthesize and play it
+        immediately — so the first sentence is audible while the LLM is still
+        generating the rest. Falls back to ``_process_one()`` on any failure.
+        """
+        sid = event.session_id
+        if sid and sid in self._cancelled_sessions:
+            self._cancelled_sessions.discard(sid)
+
+        def _register(proc: asyncio.subprocess.Process) -> None:
+            self._current_proc = proc
+            self._current_session_id = sid
+
+        try:
+            lang = (
+                detect_for(event.cwd)
+                if self.cfg.behavior.voice_language == "auto"
+                else self.cfg.behavior.voice_language  # type: ignore[assignment]
+            )
+            spoken_parts: list[str] = []
+            async for sentence in self.router.phrase_stream(event, lang=lang):
+                if sid and sid in self._cancelled_sessions:
+                    logger.debug("DROP cancelled-mid-stream sid={}", sid)
+                    break
+                spoken_parts.append(sentence)
+                logger.debug(
+                    "STREAM-PLAY type={} sid={} chunk={!r}",
+                    event.notification_type, sid, sentence[:80],
+                )
+                # Try streaming TTS first (e.g. ElevenLabs), then fall back
+                # to file-based synth+play per chunk.
+                if await self._try_stream(
+                    sentence, lang, event.voice_id,
+                    on_spawn=_register, session_id=sid,
+                ):
+                    continue
+                if sid and sid in self._cancelled_sessions:
+                    break
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    out_path = Path(tmp.name)
+                await self.tts.synthesize(
+                    sentence, lang, out_path, voice_id=event.voice_id,
+                )
+                if sid and sid in self._cancelled_sessions:
+                    try:
+                        out_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                try:
+                    await play(out_path, on_spawn=_register)
+                finally:
+                    try:
+                        out_path.unlink()
+                    except OSError:
+                        pass
+
+            full_text = " ".join(spoken_parts) if spoken_parts else ""
+            self._last_text = full_text
+            if full_text and self.cfg.webhook.enabled:
+                self._fire_webhook(event, full_text)
+        except Exception as exc:
+            if sid and sid in self._cancelled_sessions:
+                logger.debug("streaming playback cancelled for session {}", sid)
+            else:
+                logger.exception("streaming worker failed: {}", exc)
         finally:
             self._current_proc = None
             self._current_session_id = None
