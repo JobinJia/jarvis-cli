@@ -40,6 +40,30 @@ NotificationType = Literal[
 
 Lang = Literal["zh", "en"]
 
+# ---------------------------------------------------------------------------
+# Emotional tone — threaded from event type → phrase prompt → TTS parameters.
+# Providers that support voice_settings (ElevenLabs) map these to synthesis
+# knobs; all providers benefit from the prompt clause, which shapes the LLM's
+# written text toward the target emotion.
+# ---------------------------------------------------------------------------
+
+Emotion = Literal["warm", "neutral", "gentle", "grave", "pleased", "sardonic"]
+
+EVENT_EMOTION: dict[str, Emotion] = {
+    "session_start": "warm",
+    "permission_prompt": "neutral",
+    "idle_prompt": "gentle",
+    "tool_failure": "grave",
+    "task_complete": "pleased",
+    "ask_user_question": "neutral",
+    "elicitation_dialog": "neutral",
+}
+
+
+def emotion_for(notification_type: str) -> Emotion:
+    """Look up the emotion for an event type; unknown types default to neutral."""
+    return EVENT_EMOTION.get(notification_type, "neutral")
+
 
 @dataclass(frozen=True)
 class Event:

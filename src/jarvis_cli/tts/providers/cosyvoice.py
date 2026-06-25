@@ -69,6 +69,7 @@ class CosyVoiceProvider(TTSProvider):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path:
         # voice_id ignored: CosyVoice clones the prompt audio's voice; the
         # English/Chinese ref wavs are the only voice knob the daemon exposes.

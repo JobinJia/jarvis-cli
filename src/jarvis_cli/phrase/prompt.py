@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import random
 
-from ..types import Event, Lang
+from ..types import Emotion, Event, Lang, emotion_for
 
 # `{humor}` slot is filled per request from the user's humor_level (0-3).
 # Kept as a slot so we can A/B different phrasings without editing every
@@ -66,6 +66,19 @@ _IDLE_FLAVORS: tuple[str, ...] = (
     "tea served and going cold",
 )
 
+# Unified emotion clauses: each emotion maps to a tone instruction appended
+# to the system prompt. Replaces the old per-event _FAILURE_CLAUSE /
+# _COMPLETE_CLAUSE approach — the event type now selects an emotion (via
+# EVENT_EMOTION in types.py), and the emotion selects the clause here.
+_EMOTION_CLAUSES: dict[str, str] = {
+    "warm": "Speak warmly and welcomingly, as though greeting a returning friend.",
+    "neutral": "",
+    "gentle": "Speak gently and patiently, with a soft invitation.",
+    "grave": "Speak gravely and concisely — state what failed and why. No banter.",
+    "pleased": "Speak with quiet satisfaction, brief and light.",
+    "sardonic": "Speak with sardonic amusement, as though unsurprised by the absurdity.",
+}
+
 # Appended to the system prompt only for idle_prompt requests.
 _IDLE_CLAUSE = (
     " This is an idle notification with nothing to report; improvise a fresh "
@@ -73,17 +86,14 @@ _IDLE_CLAUSE = (
     "reuse the phrasing in 'avoid', and do not copy the example reply."
 )
 
-# Appended for tool_failure: bias toward a grave, concise alert. Keep the
-# wit dialled down regardless of humor_level — a failure is not the moment
-# for banter.
+# Appended for tool_failure: behavioral frame on top of the emotion clause.
 _FAILURE_CLAUSE = (
-    " This is a FAILURE report: a tool or command just failed. Speak gravely "
-    "and concisely — state what failed and the gist of why, in ONE short "
-    "sentence. No reassurance, no banter, no jokes."
+    " This is a FAILURE report: a tool or command just failed. State what "
+    "failed and the gist of why, in ONE short sentence. No reassurance, "
+    "no banter, no jokes."
 )
 
-# Appended for task_complete: a brief 'finished' acknowledgement. This fires
-# after every turn, so it must stay terse — a few words, not a sentence.
+# Appended for task_complete: behavioral frame on top of the emotion clause.
 _COMPLETE_CLAUSE = (
     " This is a COMPLETION notice: Claude just finished responding. Reply with "
     "a very brief acknowledgement of three to six words (e.g. 'All done, sir.'). "
@@ -217,6 +227,7 @@ def build_messages(
     hard_cap: int,
     humor_level: int = 1,
     avoid: str | None = None,
+    emotion: Emotion | None = None,
 ) -> list[dict[str, str]]:
     """Build OpenAI-compatible chat messages for an Event.
 
@@ -230,8 +241,13 @@ def build_messages(
     `avoid` (idle_prompt only) is the previously spoken idle line; the
     request carries it plus a random `flavor` hint so the model improvises
     a fresh sentence instead of parroting one stock phrase.
+
+    `emotion` selects a tone clause from `_EMOTION_CLAUSES`. When None,
+    the emotion is derived from the event's notification_type via
+    `emotion_for()`.
     """
     humor = _humor_clause(humor_level)
+    emo = emotion or emotion_for(event.notification_type)
     is_idle = event.notification_type == "idle_prompt"
     if lang == "zh":
         sys = _SYSTEM_BASE.format(
@@ -246,6 +262,15 @@ def build_messages(
         )
         few_shot = _FEW_SHOT_EN
 
+    # Inject the emotion clause (warm, grave, pleased, etc.) — shapes the
+    # LLM's written text toward the target tone for ALL TTS providers, even
+    # those that have no synthesis-level emotion knobs.
+    emo_clause = _EMOTION_CLAUSES.get(emo, "")
+    if emo_clause:
+        sys += " " + emo_clause
+
+    # Per-event behavioral frame (idle flavor, failure/completion framing)
+    # layered on top of the emotion clause.
     if is_idle:
         sys += _IDLE_CLAUSE
     elif event.notification_type == "tool_failure":

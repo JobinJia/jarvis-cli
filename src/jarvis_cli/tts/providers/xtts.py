@@ -79,6 +79,7 @@ class XTTSProvider(TTSProvider):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path:
         # XTTS has no notion of an EL-style voice_id (clones from ref audio /
         # embedding); the override is ignored. Future: could resolve voice_id

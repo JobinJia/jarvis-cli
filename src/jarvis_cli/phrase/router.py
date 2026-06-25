@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from loguru import logger
 
 from ..config import Config
-from ..types import Event, Lang
+from ..types import Emotion, Event, Lang
 from . import extract, redact
 from .chunker import chunk_sentences
 from .prompt import build_messages
@@ -49,13 +49,19 @@ class PhraseRouter:
         # `avoid` so the model doesn't repeat itself back-to-back.
         self._last_idle_line: str | None = None
 
-    async def phrase(self, event: Event, lang: Lang) -> str:
-        text = await self._phrase_inner(event, lang)
+    async def phrase(
+        self, event: Event, lang: Lang,
+        emotion: Emotion | None = None,
+    ) -> str:
+        text = await self._phrase_inner(event, lang, emotion=emotion)
         if event.notification_type == "idle_prompt":
             self._last_idle_line = text
         return text
 
-    async def _phrase_inner(self, event: Event, lang: Lang) -> str:
+    async def _phrase_inner(
+        self, event: Event, lang: Lang,
+        emotion: Emotion | None = None,
+    ) -> str:
         if event.notification_type == "tool_failure":
             summary = extract.extract_failure(event.tool_name, event.tool_input)
         elif event.notification_type == "api_error":
@@ -74,6 +80,7 @@ class PhraseRouter:
             humor_level=self.cfg.behavior.humor_level,
             avoid=self._last_idle_line
             if event.notification_type == "idle_prompt" else None,
+            emotion=emotion,
         )
         primary_failed = False
         for i, provider in enumerate([self.primary, *self.fallbacks]):

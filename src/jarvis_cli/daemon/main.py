@@ -30,7 +30,7 @@ from ..tts.providers.elevenlabs import ElevenLabsProvider
 from ..tts.providers.piper import PiperProvider
 from ..tts.providers.say import SayProvider
 from ..tts.providers.xtts import XTTSProvider
-from ..types import Event
+from ..types import Event, emotion_for
 from .dedup import DedupWindow
 from .health import HealthServer
 from .listener import serve_unix_socket
@@ -348,6 +348,11 @@ class Daemon:
             self._current_proc = proc
             self._current_session_id = sid
 
+        # Derive the emotion for this event once; it flows into both the
+        # phrase prompt (shaping the LLM's written text) and the TTS
+        # provider (ElevenLabs voice_settings presets, etc.).
+        emotion = emotion_for(event.notification_type)
+
         try:
             if event.text is not None:
                 # Caller pre-baked the phrase; skip the LLM entirely.
@@ -371,7 +376,9 @@ class Daemon:
                     if self.cfg.behavior.voice_language == "auto"
                     else self.cfg.behavior.voice_language  # type: ignore[assignment]
                 )
-                text = await self.router.phrase(event, lang=lang)
+                text = await self.router.phrase(
+                    event, lang=lang, emotion=emotion,
+                )
             self._last_text = text
             # Remote push (opt-in). Fire-and-forget as a detached task so the
             # network call runs CONCURRENTLY with audio playback below and can
@@ -389,12 +396,13 @@ class Daemon:
                 logger.debug("DROP cancelled-before-play sid={}", sid)
                 return
             logger.debug(
-                "PLAY type={} sid={} text={!r}",
-                event.notification_type, sid, text[:80],
+                "PLAY type={} sid={} emotion={} text={!r}",
+                event.notification_type, sid, emotion, text[:80],
             )
             if await self._try_stream(
                 text, lang, event.voice_id,
                 on_spawn=_register, session_id=sid,
+                emotion=emotion,
             ):
                 return
             # Skip synth fallback if a cancel arrived between stream attempt
@@ -403,7 +411,10 @@ class Daemon:
                 return
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 out_path = Path(tmp.name)
-            await self.tts.synthesize(text, lang, out_path, voice_id=event.voice_id)
+            await self.tts.synthesize(
+                text, lang, out_path,
+                voice_id=event.voice_id, emotion=emotion,
+            )
             # synthesize() is the long pole for non-streaming providers
             # (CosyVoice ~seconds) and registers no play proc, so a cancel that
             # lands mid-synth kills nothing. Re-check before playing so the
@@ -520,6 +531,7 @@ class Daemon:
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
         *, on_spawn=None, session_id: str | None = None,
+        emotion: str | None = None,
     ) -> bool:
         """If the primary TTS supports streaming, pipe chunks straight to
         ffplay so playback begins before synthesis completes. Returns True
@@ -537,7 +549,7 @@ class Daemon:
             return False
         try:
             await play_stream(
-                primary.stream(text, lang, voice_id=voice_id),
+                primary.stream(text, lang, voice_id=voice_id, emotion=emotion),
                 on_spawn=on_spawn,
             )
             return True

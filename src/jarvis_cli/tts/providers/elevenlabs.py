@@ -46,11 +46,27 @@ class ElevenLabsProvider(TTSProvider):
             raise RuntimeError("ElevenLabs voice_id is not configured")
         return key, effective_voice
 
-    def _body(self, text: str) -> dict:
+    # Emotion → ElevenLabs voice_settings presets. Emotions not listed here
+    # fall back to the provider defaults (stability=0.5, similarity_boost=0.75).
+    _EMOTION_PRESETS: dict[str, dict[str, float]] = {
+        "grave":    {"stability": 0.8, "similarity_boost": 0.9, "style": 0.3},
+        "warm":     {"stability": 0.5, "similarity_boost": 0.7, "style": 0.7},
+        "pleased":  {"stability": 0.4, "similarity_boost": 0.6, "style": 0.8},
+        "sardonic": {"stability": 0.6, "similarity_boost": 0.7, "style": 0.6},
+        "gentle":   {"stability": 0.6, "similarity_boost": 0.8, "style": 0.5},
+    }
+
+    def _body(self, text: str, emotion: str | None = None) -> dict:
+        preset = self._EMOTION_PRESETS.get(emotion or "")
+        voice_settings = (
+            preset
+            if preset is not None
+            else {"stability": 0.5, "similarity_boost": 0.75}
+        )
         return {
             "text": text,
             "model_id": self.cfg.model,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            "voice_settings": voice_settings,
         }
 
     async def synthesize(
@@ -59,6 +75,7 @@ class ElevenLabsProvider(TTSProvider):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path:
         key, effective_voice = self._resolve(voice_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +89,7 @@ class ElevenLabsProvider(TTSProvider):
                     "accept": "audio/mpeg",
                     "content-type": "application/json",
                 },
-                json=self._body(text),
+                json=self._body(text, emotion=emotion),
             )
             if r.status_code == 401:
                 quota = _quota_exhausted_message(r.content)
@@ -87,6 +104,7 @@ class ElevenLabsProvider(TTSProvider):
         text: str,
         lang: Lang,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> AsyncIterator[bytes]:
         key, effective_voice = self._resolve(voice_id)
         async with httpx.AsyncClient(
@@ -100,7 +118,7 @@ class ElevenLabsProvider(TTSProvider):
                     "accept": "audio/mpeg",
                     "content-type": "application/json",
                 },
-                json=self._body(text),
+                json=self._body(text, emotion=emotion),
             ) as response:
                 if response.status_code == 401:
                     body = await response.aread()
