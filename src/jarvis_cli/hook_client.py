@@ -229,6 +229,86 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
             "cwd": payload.get("cwd"),
             "session_id": payload.get("session_id"),
         }
+    # --- Tier 1 lifecycle events ---
+    # Context about to be compressed.
+    if hook_event == "PreCompact":
+        return {
+            "notification_type": "context_compacting",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # API rate limit hit — Claude pauses.
+    if hook_event == "RateLimitError":
+        return {
+            "notification_type": "rate_limited",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # A sub-agent was dispatched.
+    if hook_event == "SubagentStart":
+        return {
+            "notification_type": "subagent_spawned",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # Turn limit reached — Claude stopped.
+    if hook_event == "MaxTurnsReached":
+        return {
+            "notification_type": "max_turns_reached",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # --- Tier 2 lifecycle events ---
+    # API returned an error (not rate-limit — a general failure).
+    if hook_event == "APIError":
+        ti = {}
+        # Stash the error info so the phrase router can extract a gist.
+        for key in ("error", "message", "status_code"):
+            val = payload.get(key)
+            if val is not None:
+                ti[key] = val
+        return {
+            "notification_type": "api_error",
+            "tool_name": None,
+            "tool_input": ti,
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # Session ended.
+    if hook_event == "SessionStop":
+        return {
+            "notification_type": "session_end",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # Context compression finished.
+    if hook_event == "PostCompact":
+        return {
+            "notification_type": "context_compacted",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
+    # Context window full.
+    if hook_event == "ContextWindowOverflow":
+        return {
+            "notification_type": "context_overflow",
+            "tool_name": None,
+            "tool_input": {},
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        }
     if hook_event == "PreToolUse" and \
             payload.get("tool_name") == "AskUserQuestion":
         ti = payload.get("tool_input") or {}

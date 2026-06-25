@@ -90,6 +90,60 @@ _COMPLETE_CLAUSE = (
     "Do not summarise the work; do not ask a question."
 )
 
+# --- Tier 1 lifecycle clauses ---
+
+# Context about to be compressed (PreCompact). A brief heads-up.
+_COMPACT_CLAUSE = (
+    " This is a CONTEXT-COMPACTION alert: the conversation context is about to "
+    "be compressed. State this calmly in ONE short sentence. No details needed."
+)
+
+# Rate-limit hit (RateLimitError). Keep it matter-of-fact.
+_RATE_LIMIT_CLAUSE = (
+    " This is a RATE-LIMIT alert: Claude has hit the API rate limit and must "
+    "pause briefly. Announce the pause calmly in ONE short sentence."
+)
+
+# Sub-agent dispatched (SubagentStart). Brief acknowledgement.
+_SUBAGENT_CLAUSE = (
+    " This is a SUB-AGENT dispatch notice: a sub-agent has been spawned. "
+    "Announce it briefly in ONE short sentence."
+)
+
+# Turn limit reached (MaxTurnsReached). Claude has stopped.
+_MAX_TURNS_CLAUSE = (
+    " This is a TURN-LIMIT notice: Claude has reached its maximum number of "
+    "turns and stopped. State this gravely in ONE short sentence."
+)
+
+# --- Tier 2 lifecycle clauses ---
+
+# API error (APIError). Grave, concise — like tool_failure.
+_API_ERROR_CLAUSE = (
+    " This is an API ERROR report: the API returned an error. Speak gravely "
+    "and concisely — state the gist of the error in ONE short sentence. "
+    "No reassurance, no banter."
+)
+
+# Session ended (SessionStop). A farewell.
+_SESSION_END_CLAUSE = (
+    " This is a SESSION-END notice: the Claude session is ending. Reply with "
+    "a brief, warm farewell of three to six words. Do not summarise the work."
+)
+
+# Context compacted (PostCompact). Brief 'done, moving on'.
+_POST_COMPACT_CLAUSE = (
+    " This is a POST-COMPACTION notice: the context has been compressed. "
+    "Reply with a very brief acknowledgement of a few words indicating "
+    "compression is done and work continues."
+)
+
+# Context window full (ContextWindowOverflow). Urgent alert.
+_CONTEXT_OVERFLOW_CLAUSE = (
+    " This is a CONTEXT-OVERFLOW alert: the context window is completely full. "
+    "State this urgently in ONE short sentence. No reassurance."
+)
+
 
 def _pick_flavor() -> str:
     return random.choice(_IDLE_FLAVORS)
@@ -198,6 +252,22 @@ def build_messages(
         sys += _FAILURE_CLAUSE
     elif event.notification_type == "task_complete":
         sys += _COMPLETE_CLAUSE
+    elif event.notification_type == "context_compacting":
+        sys += _COMPACT_CLAUSE
+    elif event.notification_type == "rate_limited":
+        sys += _RATE_LIMIT_CLAUSE
+    elif event.notification_type == "subagent_spawned":
+        sys += _SUBAGENT_CLAUSE
+    elif event.notification_type == "max_turns_reached":
+        sys += _MAX_TURNS_CLAUSE
+    elif event.notification_type == "api_error":
+        sys += _API_ERROR_CLAUSE
+    elif event.notification_type == "session_end":
+        sys += _SESSION_END_CLAUSE
+    elif event.notification_type == "context_compacted":
+        sys += _POST_COMPACT_CLAUSE
+    elif event.notification_type == "context_overflow":
+        sys += _CONTEXT_OVERFLOW_CLAUSE
 
     blob: dict[str, object] = {
         "notification_type": event.notification_type,

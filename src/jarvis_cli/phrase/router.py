@@ -57,6 +57,8 @@ class PhraseRouter:
     async def _phrase_inner(self, event: Event, lang: Lang) -> str:
         if event.notification_type == "tool_failure":
             summary = extract.extract_failure(event.tool_name, event.tool_input)
+        elif event.notification_type == "api_error":
+            summary = extract.extract_api_error(event.tool_input)
         else:
             summary = extract.extract(event.tool_name, event.tool_input)
         summary = redact.scrub(

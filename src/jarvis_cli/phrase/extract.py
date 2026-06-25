@@ -121,6 +121,28 @@ def extract(tool_name: str | None, tool_input: dict[str, Any] | None) -> str:
     return json.dumps(tool_input, ensure_ascii=False)[:_MAX_RAW]
 
 
+_API_ERR_CAP = 160  # error-gist cap for API error events
+
+
+def extract_api_error(tool_input: dict[str, Any] | None) -> str:
+    """Summarise an api_error event: extract error message / status code.
+
+    The hook stashes available error info (error, message, status_code) into
+    tool_input. We combine them into a short summary for the phrase router."""
+    if not tool_input:
+        return ""
+    parts: list[str] = []
+    status = tool_input.get("status_code")
+    if status is not None:
+        parts.append(f"HTTP {status}")
+    for key in ("error", "message"):
+        val = tool_input.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val.strip()[:_API_ERR_CAP])
+            break
+    return ": ".join(parts) if parts else ""
+
+
 _FAIL_ERR_CAP = 160  # error-gist cap for the grave failure line
 
 
