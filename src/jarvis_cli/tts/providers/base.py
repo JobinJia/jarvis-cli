@@ -29,6 +29,7 @@ class TTSProvider(ABC):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path: ...
 
     async def stream(
@@ -36,6 +37,7 @@ class TTSProvider(ABC):
         text: str,
         lang: Lang,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> AsyncIterator[bytes]:
         """Yield audio bytes incrementally. Default impl signals 'not supported'."""
         raise NotImplementedError(f"{self.name} does not support streaming")

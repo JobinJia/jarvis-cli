@@ -24,7 +24,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
 
     phrased: list[str] = []
 
-    async def fake_phrase(event: Event, lang):
+    async def fake_phrase(event: Event, lang, emotion=None):
         s = f"Sir, {event.tool_name}!"
         phrased.append(s)
         return s
@@ -34,7 +34,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
     async def fake_play(audio: Path, *, on_spawn=None) -> None:
         played.append(audio)
 
-    async def fake_synth(text: str, lang, out_path: Path, voice_id=None):
+    async def fake_synth(text: str, lang, out_path: Path, voice_id=None, emotion=None):
         out_path.write_bytes(b"FAKE")
         return out_path
 
@@ -90,11 +90,11 @@ async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch):
 
     phrased: list[str] = []
 
-    async def fake_phrase(event, lang):
+    async def fake_phrase(event, lang, emotion=None):
         phrased.append(event.tool_name or "?")
         return "ok"
 
-    async def fake_synth(text, lang, out_path, voice_id=None):
+    async def fake_synth(text, lang, out_path, voice_id=None, emotion=None):
         out_path.write_bytes(b"x")
         return out_path
 

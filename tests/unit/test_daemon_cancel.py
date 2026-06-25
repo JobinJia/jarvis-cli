@@ -135,7 +135,7 @@ async def test_worker_skips_play_when_cancelled_during_synth():
         tool_name="T", session_id="abc", text="hi", lang="en",
     )
 
-    async def _synth(text, lang, out_path, voice_id=None):
+    async def _synth(text, lang, out_path, voice_id=None, emotion=None):
         out_path.write_bytes(b"")  # pretend a file was produced
         d._cancelled_sessions.add("abc")  # user acts mid-synthesis
 
@@ -170,7 +170,7 @@ async def test_worker_skips_stream_when_cancelled_during_phrasing():
         tool_name="T", session_id="abc",
     )
 
-    async def _phrase(event, *, lang):
+    async def _phrase(event, *, lang, emotion=None):
         d._cancelled_sessions.add("abc")  # user acts during phrasing
         return "hello"
 

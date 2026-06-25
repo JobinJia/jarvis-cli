@@ -29,6 +29,7 @@ class SayProvider(TTSProvider):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path:
         # `voice_id` here is interpreted as a macOS `say` voice name (eg "Daniel",
         # "Tingting", "Karen"); fall back to a language-appropriate default.

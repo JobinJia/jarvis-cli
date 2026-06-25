@@ -71,6 +71,7 @@ class PiperProvider(TTSProvider):
         lang: Lang,
         out_path: Path,
         voice_id: str | None = None,
+        emotion: str | None = None,
     ) -> Path:
         # voice_id overrides the per-lang voice name when given (eg a request
         # for a specific downloaded voice); otherwise pick by language.

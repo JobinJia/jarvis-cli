@@ -13,9 +13,10 @@ class _StubTTS(TTSProvider):
         self.mode = mode
         self.calls = 0
 
-    async def synthesize(self, text, lang, out_path, voice_id=None):
+    async def synthesize(self, text, lang, out_path, voice_id=None, emotion=None):
         self.calls += 1
         self.last_voice_id = voice_id
+        self.last_emotion = emotion
         if self.mode == "fail":
             raise RuntimeError(f"{self.name} down")
         out_path.write_bytes(b"AUDIO-" + self.name.encode())

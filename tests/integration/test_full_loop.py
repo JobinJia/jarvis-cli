@@ -20,12 +20,12 @@ async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch):
     phrased: list[str] = []
     played: list[Path] = []
 
-    async def fake_phrase(event, lang):
+    async def fake_phrase(event, lang, emotion=None):
         s = f"Sir, {event.notification_type}"
         phrased.append(s)
         return s
 
-    async def fake_synth(text, lang, out_path, voice_id=None):
+    async def fake_synth(text, lang, out_path, voice_id=None, emotion=None):
         out_path.write_bytes(b"WAV")
         return out_path
 
