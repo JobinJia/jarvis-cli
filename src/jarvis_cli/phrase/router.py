@@ -5,13 +5,14 @@ dumb HTTP adapters that just take pre-built messages and return a string.
 """
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from loguru import logger
 
 from ..config import Config
 from ..types import Event, Lang
 from . import extract, redact
+from .chunker import chunk_sentences
 from .prompt import build_messages
 from .providers.base import PhraseProvider
 from .templates import render_template
@@ -116,3 +117,54 @@ class PhraseRouter:
             self.cfg.behavior.phrase_target_chars,
             self.cfg.behavior.phrase_hard_cap,
         )
+
+    async def phrase_stream(
+        self, event: Event, lang: Lang,
+    ) -> AsyncIterator[str]:
+        """Stream sentences as the LLM produces tokens.
+
+        Yields complete sentences (via the chunker) from the primary
+        provider's ``generate_stream()``.  On any streaming failure, falls
+        back to the non-streaming ``phrase()`` and yields the whole result
+        as a single chunk — callers get at least one yield in all cases.
+        """
+        try:
+            async for sentence in self._phrase_stream_inner(event, lang):
+                yield sentence
+        except Exception as exc:
+            logger.warning("Streaming phrase failed ({}), falling back to batch", exc)
+            text = await self.phrase(event, lang)
+            yield text
+
+    async def _phrase_stream_inner(
+        self, event: Event, lang: Lang,
+    ) -> AsyncIterator[str]:
+        """Build messages and stream sentences from the primary provider."""
+        if event.notification_type == "tool_failure":
+            summary = extract.extract_failure(event.tool_name, event.tool_input)
+        else:
+            summary = extract.extract(event.tool_name, event.tool_input)
+        summary = redact.scrub(
+            summary,
+            enabled=self.cfg.behavior.privacy.cloud_redaction,
+        )
+        target_chars, hard_cap = self._budget_for(event)
+        messages = build_messages(
+            event, lang, summary,
+            target_chars=target_chars,
+            hard_cap=hard_cap,
+            humor_level=self.cfg.behavior.humor_level,
+            avoid=self._last_idle_line
+            if event.notification_type == "idle_prompt" else None,
+        )
+        if self.primary is None:
+            raise RuntimeError("No primary provider configured")
+        token_stream = self.primary.generate_stream(messages)
+        collected: list[str] = []
+        async for sentence in chunk_sentences(token_stream):
+            collected.append(sentence)
+            yield sentence
+        # Update last-idle state from the full text so the non-streaming
+        # dedup logic stays consistent.
+        if event.notification_type == "idle_prompt" and collected:
+            self._last_idle_line = " ".join(collected)

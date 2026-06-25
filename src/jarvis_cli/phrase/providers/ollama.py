@@ -1,6 +1,9 @@
 """Ollama local LLM provider (uses /api/chat)."""
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
+
 import httpx
 
 from ...config import OllamaConfig
@@ -33,6 +36,42 @@ class OllamaProvider(PhraseProvider):
             r.raise_for_status()
             data = r.json()
         return data["message"]["content"].strip()
+
+    async def generate_stream(
+        self, messages: list[dict[str, str]],
+    ) -> AsyncIterator[str]:
+        """Stream from Ollama's ``/api/chat`` with ``stream: true``.
+
+        Ollama returns NDJSON: one JSON object per line with
+        ``message.content`` holding the token delta.
+        """
+        async with httpx.AsyncClient(
+            base_url=self.cfg.base_url, timeout=self.cfg.timeout_seconds
+        ) as client:
+            async with client.stream(
+                "POST",
+                "/api/chat",
+                json={
+                    "model": self.cfg.model,
+                    "messages": messages,
+                    "stream": True,
+                    "think": False,
+                    "options": {"temperature": 0.7, "num_predict": 200},
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    token = chunk.get("message", {}).get("content")
+                    if token:
+                        yield token
+                    if chunk.get("done"):
+                        break
 
     async def healthcheck(self) -> bool:
         try:

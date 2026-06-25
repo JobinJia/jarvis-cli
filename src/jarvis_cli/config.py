@@ -273,6 +273,12 @@ class BehaviorConfig:
     #   3 — Tony-mode: openly sardonic, never sycophantic
     # Out-of-range values are clamped on load by `load_config`.
     humor_level: int = 1
+    # Streaming pipeline: overlap LLM token generation, sentence chunking,
+    # and TTS synthesis so playback of the first sentence starts before the
+    # LLM finishes. Reduces perceived latency from 2-6s to ~1s. Opt-in
+    # because it requires providers that support streaming and changes the
+    # playback cadence (multiple short audio clips instead of one long one).
+    streaming_pipeline: bool = False
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     session_briefing: SessionBriefingConfig = field(default_factory=SessionBriefingConfig)
 
