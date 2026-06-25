@@ -55,6 +55,16 @@ _OUR_HOOK_TYPES = (
     "PostToolUseFailure",
     "SessionStart",
     "Stop",
+    # Tier 1
+    "PreCompact",
+    "RateLimitError",
+    "SubagentStart",
+    "MaxTurnsReached",
+    # Tier 2
+    "APIError",
+    "SessionStop",
+    "PostCompact",
+    "ContextWindowOverflow",
 )
 
 
@@ -156,6 +166,54 @@ def _render_codex_block(hook_command: str) -> str:
         "\n"
         "[[hooks.SessionStart]]\n"
         "[[hooks.SessionStart.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.PreCompact]]\n"
+        "[[hooks.PreCompact.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.RateLimitError]]\n"
+        "[[hooks.RateLimitError.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.SubagentStart]]\n"
+        "[[hooks.SubagentStart.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.MaxTurnsReached]]\n"
+        "[[hooks.MaxTurnsReached.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.APIError]]\n"
+        "[[hooks.APIError.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.SessionStop]]\n"
+        "[[hooks.SessionStop.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.PostCompact]]\n"
+        "[[hooks.PostCompact.hooks]]\n"
+        'type = "command"\n'
+        f'command = "{hook_command}"\n'
+        "timeout = 5\n"
+        "\n"
+        "[[hooks.ContextWindowOverflow]]\n"
+        "[[hooks.ContextWindowOverflow.hooks]]\n"
         'type = "command"\n'
         f'command = "{hook_command}"\n'
         "timeout = 5\n"
@@ -557,6 +615,16 @@ def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = N
             "tool_failure",
             # "task_complete" fires after every assistant turn — opt in by
             # adding it here to hear a brief "All done, sir."
+            # Tier 1 lifecycle events — on by default.
+            "context_compacting",
+            "rate_limited",
+            "subagent_spawned",
+            "max_turns_reached",
+            # Tier 2 — opt in by uncommenting:
+            # "api_error",
+            # "session_end",
+            # "context_compacted",
+            # "context_overflow",
         ]
         phrase_target_chars = 70
         phrase_hard_cap = 120

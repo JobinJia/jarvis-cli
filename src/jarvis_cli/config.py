@@ -255,6 +255,14 @@ class BehaviorConfig:
             # `task_complete` (CC Stop) fires after every assistant turn, so
             # it stays opt-in: not in the default allowlist. Add it to
             # `[behavior].events` in config.toml to hear "All done, sir."
+            # Tier 1 lifecycle events — on by default.
+            "context_compacting",
+            "rate_limited",
+            "subagent_spawned",
+            "max_turns_reached",
+            # Tier 2 lifecycle events stay opt-in: add to `[behavior].events`
+            # in config.toml to enable (api_error, session_end,
+            # context_compacted, context_overflow).
         ]
     )
     # DEPRECATED: kept so old config.toml files don't error on load. Not read

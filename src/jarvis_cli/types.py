@@ -18,6 +18,24 @@ NotificationType = Literal[
     # Claude finished responding (CC Stop). Jarvis gives a brief completion
     # line. Fires often, so leans on the dedup window to stay quiet.
     "task_complete",
+    # --- Tier 1: high-value lifecycle events ---
+    # Context is about to be compressed (CC PreCompact).
+    "context_compacting",
+    # Hit the API rate limit (CC RateLimitError).
+    "rate_limited",
+    # A sub-agent was dispatched (CC SubagentStart).
+    "subagent_spawned",
+    # Turn limit reached — Claude stopped (CC MaxTurnsReached).
+    "max_turns_reached",
+    # --- Tier 2: medium-value lifecycle events ---
+    # The API returned an error (CC APIError).
+    "api_error",
+    # Session ended (CC SessionStop).
+    "session_end",
+    # Context compression finished (CC PostCompact).
+    "context_compacted",
+    # Context window is full (CC ContextWindowOverflow).
+    "context_overflow",
 ]
 
 Lang = Literal["zh", "en"]
