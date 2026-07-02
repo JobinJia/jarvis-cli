@@ -4,6 +4,9 @@ Consumes an async stream of token strings and yields accumulated text each
 time a sentence-ending punctuation mark is encountered.  A minimum chunk
 length prevents tiny fragments (e.g. abbreviations like "Mr.") from being
 emitted prematurely.  Any leftover text is flushed when the token stream ends.
+The very first chunk may additionally split at a clause boundary (comma or
+em-dash) so TTS can start speaking the opening clause while the LLM is still
+finishing the sentence.
 """
 from __future__ import annotations
 
@@ -21,6 +24,13 @@ _SENTENCE_END = re.compile(r'[.!?;—。！？；]["\')）\]】]?\s*$')
 # boundaries.
 MIN_CHUNK_CHARS = 20
 
+# The FIRST chunk may split at a clause boundary (comma/em-dash — Latin and
+# CJK) so TTS can start on the opening clause while the LLM finishes the
+# sentence.  Only the first chunk: mid-utterance clause splits chop prosody
+# noticeably; the utterance opener is where the latency win lives.
+_CLAUSE_END = re.compile(r'[,\uff0c—、]["\')）\]】]?\s*$')
+FIRST_CHUNK_MIN_CHARS = 12
+
 
 async def chunk_sentences(
     tokens: AsyncIterator[str],
@@ -28,6 +38,10 @@ async def chunk_sentences(
     min_chars: int = MIN_CHUNK_CHARS,
 ) -> AsyncIterator[str]:
     """Consume *tokens* and yield complete sentences.
+
+    Until the first yield, the buffer may also split at a clause boundary
+    (see ``_CLAUSE_END`` / ``FIRST_CHUNK_MIN_CHARS``) to cut time-to-first-
+    audio; after that, only sentence-ending punctuation triggers a yield.
 
     Parameters
     ----------
@@ -39,14 +53,29 @@ async def chunk_sentences(
         arrives.
     """
     buf = ""
+    yielded_any = False
     async for token in tokens:
         buf += token
         # Only attempt a split when the buffer is long enough and ends with
-        # sentence-ending punctuation.
+        # sentence-ending punctuation.  A short complete sentence takes
+        # priority over the first-chunk clause split below.
         if len(buf) >= min_chars and _SENTENCE_END.search(buf):
             sentence = buf.strip()
             if sentence:
                 yield sentence
+                yielded_any = True
+            buf = ""
+        elif (
+            not yielded_any
+            and len(buf) >= FIRST_CHUNK_MIN_CHARS
+            and _CLAUSE_END.search(buf)
+        ):
+            # First chunk only: split at a clause boundary so playback can
+            # begin before the sentence is complete.
+            clause = buf.strip()
+            if clause:
+                yield clause
+                yielded_any = True
             buf = ""
     # Flush any remaining text when the stream ends.
     tail = buf.strip()
