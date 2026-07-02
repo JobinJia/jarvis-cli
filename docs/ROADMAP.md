@@ -54,7 +54,7 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 
 - **现状**:LLM token 流 → `chunker.py` 句级分块 → XTTS `inference_stream` 逐句 raw PCM → **单 ffplay 会话**(`StreamPlayer`)无缝播放。config 开关 `behavior.streaming_pipeline`(默认已开)。
 - **落地中的关键修复**:ffplay 无 `-ac` 选项(单声道须 `-ch_layout mono`),此前流式一直在静默回退到文件合成;修复后流式首次真正生效。ffplay stderr 现随异常上抛,同类问题日志可见。
-- **延迟已做**:`stream_chunk_size=10`(首块解码时间减半)、ffplay `-probesize 32 -analyzeduration 0 -fflags nobuffer`、XTTS 模型/latents/天气 daemon 启动预热、Ollama `keep_alive=30m` 常驻。
+- **延迟已做**:ffplay `-probesize 32 -analyzeduration 0 -fflags nobuffer`、XTTS 模型/latents/天气 daemon 启动预热、Ollama `keep_alive=30m` 常驻。`stream_chunk_size` 实测(2026-07-03,MPS):10 两头皆输(首块 4.16s / RTF 2.23 → 长句卡顿),20 最优(首块 0.58s / RTF 0.76),保持 20。
 - **剩余**(见 §3.4):措辞预取流水线(积压场景)、chunker 首块提前切分、sounddevice 进程内播放。
 
 ### 3.3 情感化语音 ✅ 已落地(2026-07)

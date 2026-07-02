@@ -267,8 +267,9 @@ async def test_xtts_stream_yields_pcm_chunks(tmp_path: Path):
     assert kwargs["language"] == "en"
     assert kwargs["gpt_cond_latent"] == "g"
     assert kwargs["speaker_embedding"] == "s"
-    # Halved from the library default 20 — the first chunk gates first sound.
-    assert kwargs["stream_chunk_size"] == 10
+    # Config value passes through verbatim (20 on MPS — see XTTSConfig for
+    # the measured chunk-size trade-off).
+    assert kwargs["stream_chunk_size"] == 20
     # No emotion → prosody untouched: base short-text speed, base temperature.
     assert kwargs["speed"] == pytest.approx(cfg.speed_short)
     assert kwargs["temperature"] == pytest.approx(cfg.temperature)

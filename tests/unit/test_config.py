@@ -21,9 +21,9 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     assert cfg.llm.provider == "deepseek"
     assert cfg.llm.fallback == "ollama"
     assert cfg.tts.provider == "xtts"
-    # Streaming chunk size: half the library default (20) so the first
-    # audible chunk lands in ~half the time.
-    assert cfg.tts.xtts.stream_chunk_size == 10
+    # 20, not lower: chunk=10 measured strictly worse on MPS (first chunk
+    # 4.16s vs 0.58s, RTF 2.23 vs 0.76 → mid-utterance stutter).
+    assert cfg.tts.xtts.stream_chunk_size == 20
     assert cfg.behavior.dedup_window_seconds == 10
     assert cfg.behavior.queue_max_size == 5
     assert cfg.behavior.voice_language == "en"

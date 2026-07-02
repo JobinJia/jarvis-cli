@@ -131,11 +131,13 @@ class XTTSConfig:
     speed_short: float = 1.15
     speed_long: float = 1.00
     short_threshold_chars: int = 60
-    # GPT tokens decoded per streamed chunk. The library default (20 ≈ 0.85s
-    # of audio) makes the first chunk the dominant first-sound latency;
-    # 10 roughly halves time-to-first-audio. Chunk boundaries are crossfaded
-    # by the model's overlap window, so smaller chunks stay seamless.
-    stream_chunk_size: int = 10
+    # GPT tokens decoded per streamed chunk. Keep at 20 on MPS: measured
+    # 2026-07-03, chunk=10 is strictly worse on BOTH axes — per-chunk
+    # overhead dominates (first_chunk 4.16s vs 0.58s, RTF 2.23 vs 0.76),
+    # and RTF > 1 starves the player mid-utterance (audible stutter on
+    # anything longer than a short line). 40 buys a little more throughput
+    # (RTF 0.68) at ~1s first chunk; 20 is the sweet spot.
+    stream_chunk_size: int = 20
 
 
 @dataclass
