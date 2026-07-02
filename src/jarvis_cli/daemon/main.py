@@ -746,8 +746,13 @@ class Daemon:
         providers (stream_pcm set) get the in-process sounddevice sink — which
         itself falls back to ffplay when sounddevice is unavailable — while
         container-format providers (MP3 from ElevenLabs) keep ffplay, the only
-        decoder we have for those bytes."""
-        if primary.stream_pcm is not None:
+        decoder we have for those bytes.
+
+        The PCM sink is additionally gated behind `tts.pcm_playback` (default
+        off): with synthesis slower than realtime it underruns audibly, while
+        ffplay buffers through the stalls — see TTSConfig for the full story.
+        """
+        if primary.stream_pcm is not None and self.cfg.tts.pcm_playback:
             rate, channels = primary.stream_pcm
             return await open_pcm_sink(
                 rate=rate, channels=channels,

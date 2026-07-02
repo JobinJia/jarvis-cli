@@ -294,8 +294,12 @@ def _fake_open_pcm_sink(sink: _FakeSession, seen: dict):
 @pytest.mark.asyncio
 async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
     """A raw-PCM primary (stream_pcm set) must get the in-process sounddevice
-    sink — with the provider's rate/channels — instead of an ffplay spawn."""
-    d = Daemon(Config())
+    sink — with the provider's rate/channels — instead of an ffplay spawn.
+    Opt-in: the sink is gated behind tts.pcm_playback (underruns audibly when
+    synthesis runs slower than realtime, so ffplay stays the default)."""
+    cfg = Config()
+    cfg.tts.pcm_playback = True
+    d = Daemon(cfg)
 
     async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
         yield "One sentence, straight to CoreAudio."
@@ -320,10 +324,39 @@ async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
 
 
 @pytest.mark.asyncio
+async def test_pcm_sink_stays_off_by_default():
+    """With tts.pcm_playback at its default (False), even a raw-PCM provider
+    must keep the ffplay path — the PCM sink underruns audibly (stutter +
+    crackle) whenever synthesis runs slower than realtime, e.g. XTTS on MPS."""
+    d = Daemon(Config())
+
+    async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
+        yield "Buffered through ffplay, sir."
+
+    d.router.phrase_stream = _phrase_stream
+    primary = _FakePrimary()
+    primary.stream_pcm = (24000, 1)
+    d.tts.primary = primary
+
+    fake_sp, sessions = _fake_stream_player()
+    with patch(
+        "jarvis_cli.daemon.main.open_pcm_sink"
+    ) as pcm_sink, patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+        await d._process_one_streaming(_llm_event())
+
+    pcm_sink.assert_not_called()
+    assert len(sessions) == 1
+    assert sessions[0].fed == [b"Buffered through ffplay, sir."]
+
+
+@pytest.mark.asyncio
 async def test_try_stream_pcm_provider_routes_through_pcm_sink():
     """The batch whole-text path shares the sink selection: stream_pcm set →
-    open_pcm_sink (fed and closed), never play_stream."""
-    d = Daemon(Config())
+    open_pcm_sink (fed and closed), never play_stream. Same tts.pcm_playback
+    opt-in gate as the streaming path."""
+    cfg = Config()
+    cfg.tts.pcm_playback = True
+    d = Daemon(cfg)
     primary = _FakePrimary()
     primary.stream_pcm = (24000, 1)
     d.tts.primary = primary

@@ -215,6 +215,13 @@ class PiperConfig:
 class TTSConfig:
     provider: str = "xtts"
     fallback: str = "say"
+    # Route raw-PCM streaming through the in-process sounddevice sink instead
+    # of an ffplay subprocess. Off by default: when synthesis runs slower than
+    # realtime (XTTS on MPS), the blocking PortAudio stream underruns audibly
+    # (stutter + crackle), while ffplay's internal buffering starves silently.
+    # Flip on once the PCM sink grows a jitter buffer that rides out decode
+    # stalls as clean silence.
+    pcm_playback: bool = False
     xtts: XTTSConfig = field(default_factory=XTTSConfig)
     elevenlabs: ElevenLabsConfig = field(default_factory=ElevenLabsConfig)
     cosyvoice: CosyVoiceConfig = field(default_factory=CosyVoiceConfig)
