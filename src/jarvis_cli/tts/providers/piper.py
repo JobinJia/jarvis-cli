@@ -65,6 +65,11 @@ class PiperProvider(TTSProvider):
         self._voices[name] = voice
         return voice
 
+    async def prewarm(self) -> None:
+        """Load the English ONNX voice so the first notification doesn't pay
+        the model load."""
+        await asyncio.to_thread(self._load_voice, self._voice_name("en"))
+
     async def synthesize(
         self,
         text: str,

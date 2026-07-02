@@ -5,6 +5,8 @@ Failure modes (Ollama down, unparseable reply) must resolve to ``unclear`` — w
 ask the user rather than fabricate a confirm or command-inject everything the
 gate let through.
 """
+import json
+
 import httpx
 import respx
 
@@ -41,6 +43,19 @@ async def test_confirmed_returns_only_llm_selected_subset():
         out = await verify_candidates("提交代码", _candidates(), cfg, noun="skill")
     assert out.status == CONFIRMED
     assert [m.record.name for m in out.matches] == ["git-commit"]
+
+
+async def test_payload_keeps_model_resident():
+    # The request must carry keep_alive so bursty verifications don't pay a
+    # cold model reload between events (see OllamaConfig.keep_alive).
+    cfg = OllamaConfig()
+    with respx.mock(base_url=cfg.base_url) as router:
+        route = router.post("/api/chat").respond(
+            200, json={"message": {"content": "1"}},
+        )
+        await verify_candidates("提交代码", _candidates(), cfg, noun="skill")
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["keep_alive"] == cfg.keep_alive
 
 
 async def test_none_reply_drops_all():

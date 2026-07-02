@@ -79,6 +79,24 @@ async def test_piper_caches_loaded_voice(tmp_path: Path):
     PV.load.assert_called_once()  # loaded once, reused on the second call
 
 
+@pytest.mark.asyncio
+async def test_piper_prewarm_loads_and_caches_en_voice(tmp_path: Path):
+    """prewarm() eagerly loads the English voice at daemon start, so the first
+    notification reuses the resident model instead of paying the ONNX load."""
+    cfg = PiperConfig(data_dir=str(tmp_path), voice_en="en_GB-alan-medium")
+    p = PiperProvider(cfg)
+    (tmp_path / "en_GB-alan-medium.onnx").write_bytes(b"\x00")  # presence check
+    voice = _fake_voice()
+    with patch(
+        "jarvis_cli.tts.providers.piper.PiperVoice"
+    ) as PV:
+        PV.load = MagicMock(return_value=voice)
+        await p.prewarm()
+        PV.load.assert_called_once()  # en voice loaded eagerly
+        await p.synthesize("Sir, ready.", lang="en", out_path=tmp_path / "a.wav")
+    PV.load.assert_called_once()  # synth reused the prewarmed cache
+
+
 def test_piper_advertises_no_streaming():
     assert PiperProvider.supports_streaming is False
 

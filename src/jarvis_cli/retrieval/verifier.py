@@ -95,6 +95,9 @@ async def verify_candidates(
                     "messages": messages,
                     "stream": False,
                     "think": False,
+                    # Keep the model resident between bursty requests so the
+                    # next verification doesn't pay a cold reload (see OllamaConfig).
+                    "keep_alive": ollama_cfg.keep_alive,
                     "options": {"temperature": 0, "num_predict": 20},
                 },
             )

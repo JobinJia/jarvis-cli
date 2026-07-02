@@ -114,6 +114,7 @@ async def test_play_stream_raises_when_ffplay_fails():
         class _P:
             returncode = 1
             stdin = _Stdin()
+            stderr = None  # close() reads it for the error detail when set
 
             async def wait(self):
                 return 1
@@ -186,6 +187,157 @@ async def test_play_stream_invokes_on_spawn_with_proc():
 
     assert len(seen) == 1
     assert isinstance(seen[0], _P)
+
+
+@pytest.mark.asyncio
+async def test_stream_player_one_proc_across_multiple_feeds():
+    """The whole point of StreamPlayer: several chunk iterators (per-sentence
+    TTS streams) flow through ONE ffplay pipe — no per-sentence respawn gap."""
+    from jarvis_cli.player import StreamPlayer
+
+    written: list[bytes] = []
+    closed = {"value": False}
+
+    class _Stdin:
+        async def drain(self):
+            return None
+
+        def write(self, data: bytes):
+            written.append(data)
+
+        def close(self):
+            closed["value"] = True
+
+        async def wait_closed(self):
+            return None
+
+        def is_closing(self):
+            return closed["value"]
+
+    spawn_count = {"value": 0}
+
+    async def _fake_exec(*args, **kwargs):
+        spawn_count["value"] += 1
+
+        class _P:
+            returncode = 0
+            stdin = _Stdin()
+
+            async def wait(self):
+                return 0
+
+        return _P()
+
+    async def _sentence(data: bytes):
+        yield data
+
+    with patch(
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+    ):
+        player = await StreamPlayer.spawn()
+        await player.feed(_sentence(b"first."))
+        await player.feed(_sentence(b"second."))
+        await player.close()
+
+    assert spawn_count["value"] == 1
+    assert b"".join(written) == b"first.second."
+    assert closed["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_player_close_raises_on_nonzero_exit():
+    from jarvis_cli.player import StreamPlayer
+
+    class _Stdin:
+        async def drain(self): return None
+        def write(self, data: bytes): pass
+        def close(self): pass
+        async def wait_closed(self): return None
+        def is_closing(self): return False
+
+    class _P:
+        returncode = 1
+        stdin = _Stdin()
+        stderr = None  # close() reads it for the error detail when set
+
+        async def wait(self): return 1
+
+    async def _fake_exec(*args, **kwargs):
+        return _P()
+
+    with patch(
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+    ):
+        player = await StreamPlayer.spawn()
+        with pytest.raises(RuntimeError):
+            await player.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_player_abort_never_raises():
+    """abort() is the error-path cleanup — a dead process (ProcessLookupError
+    from kill) must be swallowed, not mask the exception being handled."""
+    from jarvis_cli.player import StreamPlayer
+
+    class _Stdin:
+        async def drain(self): return None
+        def write(self, data: bytes): pass
+        def close(self): pass
+        async def wait_closed(self): return None
+        def is_closing(self): return False
+
+    class _P:
+        returncode = -9
+        stdin = _Stdin()
+
+        def kill(self):
+            raise ProcessLookupError()
+
+        async def wait(self): return -9
+
+    async def _fake_exec(*args, **kwargs):
+        return _P()
+
+    with patch(
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+    ):
+        player = await StreamPlayer.spawn()
+        await player.abort()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_stream_player_spawn_passes_input_args_before_pipe():
+    """Headerless streams (XTTS raw PCM) need decode flags positioned before
+    `-i pipe:0`, or ffplay misparses the byte stream."""
+    from jarvis_cli.player import StreamPlayer
+
+    class _Stdin:
+        async def drain(self): return None
+        def write(self, data: bytes): pass
+        def close(self): pass
+        async def wait_closed(self): return None
+        def is_closing(self): return False
+
+    class _P:
+        returncode = 0
+        stdin = _Stdin()
+
+        async def wait(self): return 0
+
+    spawn_args: list[tuple] = []
+
+    async def _fake_exec(*args, **kwargs):
+        spawn_args.append(args)
+        return _P()
+
+    with patch(
+        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+    ):
+        await StreamPlayer.spawn(input_args=("-f", "s16le"))
+
+    argv = spawn_args[0]
+    assert argv[0] == "ffplay"
+    assert argv.index("-f") < argv.index("-i")
 
 
 @pytest.mark.asyncio

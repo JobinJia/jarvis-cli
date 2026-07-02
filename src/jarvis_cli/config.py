@@ -46,6 +46,13 @@ class OllamaConfig:
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:7b"
     timeout_seconds: float = 10.0
+    # How long Ollama keeps the model resident after a request. Notifications
+    # are bursty and often >5 min apart; at the server default (5m) the 8B
+    # model gets evicted between events, so the next one eats a multi-second
+    # cold reload. Keeping it warm for 30m trades a little RAM for a steady
+    # sub-second first token. Set "-1" to pin it permanently, "0" to unload
+    # immediately after each call.
+    keep_alive: str = "30m"
 
 
 @dataclass
@@ -124,6 +131,11 @@ class XTTSConfig:
     speed_short: float = 1.15
     speed_long: float = 1.00
     short_threshold_chars: int = 60
+    # GPT tokens decoded per streamed chunk. The library default (20 ≈ 0.85s
+    # of audio) makes the first chunk the dominant first-sound latency;
+    # 10 roughly halves time-to-first-audio. Chunk boundaries are crossfaded
+    # by the model's overlap window, so smaller chunks stay seamless.
+    stream_chunk_size: int = 10
 
 
 @dataclass
@@ -273,6 +285,11 @@ class BehaviorConfig:
     # When True (default), the hook sends a cancel signal on UserPromptSubmit /
     # PostToolUse so the daemon stops any in-flight audio for that session.
     cancel_on_user_action: bool = True
+    # Drop LLM-phrased events older than this (seconds) at dequeue time — a
+    # backlog burst otherwise speaks stale notifications the user already
+    # acted on. 0 disables. Pre-baked text (`say --text`) and session_start
+    # briefings are exempt: those should speak whenever they surface.
+    stale_event_max_age_seconds: float = 60.0
     # How much wit Jarvis allows himself, 0-3. Plumbed into both the phrase
     # router system prompt and the session-start briefing prompt.
     #   0 — deadpan formal butler (no jokes)

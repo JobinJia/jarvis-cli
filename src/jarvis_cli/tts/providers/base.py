@@ -21,6 +21,10 @@ class TTSProvider(ABC):
 
     name: str
     supports_streaming: bool = False
+    # Streaming providers that emit a headerless format (e.g. raw PCM) set the
+    # ffplay decode flags here; None means ffplay auto-detects the container
+    # (works for MP3 streams).
+    stream_input_args: tuple[str, ...] | None = None
 
     @abstractmethod
     async def synthesize(
@@ -44,6 +48,14 @@ class TTSProvider(ABC):
         # Make the body an async generator for type-checkers.
         if False:
             yield b""
+
+    async def prewarm(self) -> None:
+        """Warm expensive one-off state (model load, caches) at daemon start.
+
+        Default: nothing to warm. Only providers with a real cold-start cost
+        (e.g. XTTS's multi-second model load) should override — the daemon
+        calls this blindly for whichever provider is primary.
+        """
 
     async def healthcheck(self) -> bool:
         return True

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -16,22 +17,29 @@ class OllamaProvider(PhraseProvider):
     def __init__(self, cfg: OllamaConfig) -> None:
         self.cfg = cfg
 
+    def _payload(self, messages: list[dict[str, str]], *, stream: bool) -> dict[str, Any]:
+        """Request body for `/api/chat`, shared by both call paths."""
+        return {
+            "model": self.cfg.model,
+            "messages": messages,
+            "stream": stream,
+            # think=False disables Qwen3/DeepSeek-R1 style chain-of-thought
+            # output so num_predict isn't consumed by <think>...</think>.
+            # Ignored by models that don't emit thinking tokens.
+            "think": False,
+            # Keep the model resident between bursty notifications so the
+            # next event doesn't pay a cold reload (see OllamaConfig).
+            "keep_alive": self.cfg.keep_alive,
+            "options": {"temperature": 0.7, "num_predict": 200},
+        }
+
     async def generate(self, messages: list[dict[str, str]]) -> str:
         async with httpx.AsyncClient(
             base_url=self.cfg.base_url, timeout=self.cfg.timeout_seconds
         ) as client:
             r = await client.post(
                 "/api/chat",
-                json={
-                    "model": self.cfg.model,
-                    "messages": messages,
-                    "stream": False,
-                    # think=False disables Qwen3/DeepSeek-R1 style chain-of-thought
-                    # output so num_predict isn't consumed by <think>...</think>.
-                    # Ignored by models that don't emit thinking tokens.
-                    "think": False,
-                    "options": {"temperature": 0.7, "num_predict": 200},
-                },
+                json=self._payload(messages, stream=False),
             )
             r.raise_for_status()
             data = r.json()
@@ -51,13 +59,7 @@ class OllamaProvider(PhraseProvider):
             async with client.stream(
                 "POST",
                 "/api/chat",
-                json={
-                    "model": self.cfg.model,
-                    "messages": messages,
-                    "stream": True,
-                    "think": False,
-                    "options": {"temperature": 0.7, "num_predict": 200},
-                },
+                json=self._payload(messages, stream=True),
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

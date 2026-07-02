@@ -21,6 +21,9 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     assert cfg.llm.provider == "deepseek"
     assert cfg.llm.fallback == "ollama"
     assert cfg.tts.provider == "xtts"
+    # Streaming chunk size: half the library default (20) so the first
+    # audible chunk lands in ~half the time.
+    assert cfg.tts.xtts.stream_chunk_size == 10
     assert cfg.behavior.dedup_window_seconds == 10
     assert cfg.behavior.queue_max_size == 5
     assert cfg.behavior.voice_language == "en"
@@ -31,10 +34,17 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
         "ask_user_question",
         "session_start",
         "tool_failure",
+        "context_compacting",
+        "rate_limited",
+        "subagent_spawned",
+        "max_turns_reached",
     ]
-    # task_complete is intentionally NOT in the default allowlist — it fires
-    # after every assistant turn, so it stays opt-in.
+    # task_complete (CC Stop) fires after every assistant turn, so it stays
+    # opt-in.  Tier 2 events (api_error, session_end, context_compacted,
+    # context_overflow) are also opt-in.
     assert "task_complete" not in cfg.behavior.events
+    for t2 in ("api_error", "session_end", "context_compacted", "context_overflow"):
+        assert t2 not in cfg.behavior.events
     # session_briefing block defaults in lockstep with the install.py TOML.
     assert cfg.behavior.session_briefing.enabled is True
     assert cfg.behavior.session_briefing.city == ""
@@ -42,6 +52,9 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     assert cfg.behavior.session_briefing.min_interval_seconds == 0
     # humor_level defaults to 1 (light wit). Clamped on load.
     assert cfg.behavior.humor_level == 1
+    # Stale-drop floor: LLM-phrased events older than this at dequeue time
+    # are dropped instead of spoken. 0 disables.
+    assert cfg.behavior.stale_event_max_age_seconds == 60.0
 
 
 def test_load_config_reads_toml(tmp_path: Path):

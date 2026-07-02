@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from ..briefing import WeatherCache, compose_briefing
+from ..briefing import WeatherCache, compose_briefing, detect_city
 from ..config import DEFAULT_CONFIG_PATH, Config, load_config
 from ..notify import webhook as webhook_notify
 from ..phrase.language import detect_for
@@ -22,7 +22,7 @@ from ..phrase.providers.openai import OpenAIProvider
 from ..phrase.providers.siliconflow import SiliconFlowProvider
 from ..phrase.providers.zhipu import ZhipuProvider
 from ..phrase.router import PhraseRouter
-from ..player import play, play_stream
+from ..player import StreamPlayer, play, play_stream
 from ..tts.engine import TTSEngine
 from ..tts.providers.base import TTSProvider
 from ..tts.providers.cosyvoice import CosyVoiceProvider
@@ -323,17 +323,42 @@ class Daemon:
             return _build_clarify(candidates)
         return None
 
+    def _wants_streaming(self, event: Event) -> bool:
+        """Route to the streaming pipeline when the config flag is set AND the
+        event is an LLM-phrased one (not pre-baked text, not session_start
+        which has its own compose path)."""
+        return (
+            self.cfg.behavior.streaming_pipeline
+            and event.text is None
+            and event.notification_type != "session_start"
+        )
+
+    def _is_stale(self, event: Event) -> bool:
+        """A backlog burst (long playback blocking the queue) can dequeue a
+        notification long after the user already acted on it — speaking it
+        then is noise. Pre-baked text and session_start briefings are exempt
+        (those should speak whenever they surface), as are events without a
+        received_at stamp (0.0 — synthetic/test events carry no timestamp)."""
+        max_age = self.cfg.behavior.stale_event_max_age_seconds
+        if (
+            max_age <= 0
+            or event.text is not None
+            or event.notification_type == "session_start"
+            or not event.received_at
+        ):
+            return False
+        return time.time() - event.received_at > max_age
+
     async def _worker(self) -> None:
         while True:
             event = await self.queue.get()
-            # Use the streaming pipeline when the config flag is set AND the
-            # event is an LLM-phrased one (not pre-baked text, not session_start
-            # which has its own compose path).
-            if (
-                self.cfg.behavior.streaming_pipeline
-                and event.text is None
-                and event.notification_type != "session_start"
-            ):
+            if self._is_stale(event):
+                logger.debug(
+                    "DROP stale age={:.0f}s key={}",
+                    time.time() - event.received_at, event.dedup_key(),
+                )
+                continue
+            if self._wants_streaming(event):
                 await self._process_one_streaming(event)
             else:
                 await self._process_one(event)
@@ -449,7 +474,9 @@ class Daemon:
 
         For each sentence the LLM produces, we synthesize and play it
         immediately — so the first sentence is audible while the LLM is still
-        generating the rest. Falls back to ``_process_one()`` on any failure.
+        generating the rest. All streamed sentences feed ONE ffplay session
+        (spawned lazily on the first sentence) so consecutive sentences play
+        gaplessly instead of paying a process-spawn pause between each.
         """
         sid = event.session_id
         if sid and sid in self._cancelled_sessions:
@@ -459,6 +486,12 @@ class Daemon:
             self._current_proc = proc
             self._current_session_id = sid
 
+        # Mirror _process_one: derive the emotion once so it shapes both the
+        # phrase prompt (the LLM's written tone) and every per-sentence TTS
+        # call — streamed lines must not sound flatter than batch ones.
+        emotion = emotion_for(event.notification_type)
+
+        session: StreamPlayer | None = None
         try:
             lang = (
                 detect_for(event.cwd)
@@ -466,28 +499,58 @@ class Daemon:
                 else self.cfg.behavior.voice_language  # type: ignore[assignment]
             )
             spoken_parts: list[str] = []
-            async for sentence in self.router.phrase_stream(event, lang=lang):
+            async for sentence in self.router.phrase_stream(
+                event, lang=lang, emotion=emotion,
+            ):
                 if sid and sid in self._cancelled_sessions:
                     logger.debug("DROP cancelled-mid-stream sid={}", sid)
                     break
                 spoken_parts.append(sentence)
                 logger.debug(
-                    "STREAM-PLAY type={} sid={} chunk={!r}",
-                    event.notification_type, sid, sentence[:80],
+                    "STREAM-PLAY type={} sid={} emotion={} chunk={!r}",
+                    event.notification_type, sid, emotion, sentence[:80],
                 )
-                # Try streaming TTS first (e.g. ElevenLabs), then fall back
-                # to file-based synth+play per chunk.
-                if await self._try_stream(
-                    sentence, lang, event.voice_id,
-                    on_spawn=_register, session_id=sid,
-                ):
-                    continue
+                # Try streaming TTS first (e.g. XTTS/ElevenLabs), feeding the
+                # shared ffplay pipe; fall back to file-based synth+play for
+                # this sentence on failure.
+                primary = self.tts.primary
+                if primary.supports_streaming:
+                    try:
+                        if session is None:
+                            session = await StreamPlayer.spawn(
+                                input_args=primary.stream_input_args,
+                                on_spawn=_register,
+                            )
+                        await session.feed(primary.stream(
+                            sentence, lang,
+                            voice_id=event.voice_id, emotion=emotion,
+                        ))
+                        continue
+                    except Exception as exc:
+                        if sid and sid in self._cancelled_sessions:
+                            # The worker killed ffplay to cancel playback —
+                            # the broken pipe is the kill, not a TTS failure.
+                            # Stop speaking rather than re-synthesize the
+                            # line we just silenced.
+                            logger.debug("stream cancelled for session {}", sid)
+                            break
+                        logger.warning(
+                            "Streaming TTS failed, falling back to synth: {}",
+                            exc,
+                        )
+                        # The shared pipe is in an unknown state; kill it.
+                        # Later sentences may retry streaming — a fresh
+                        # session gets spawned on the next attempt.
+                        if session is not None:
+                            await session.abort()
+                            session = None
                 if sid and sid in self._cancelled_sessions:
                     break
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
                 await self.tts.synthesize(
-                    sentence, lang, out_path, voice_id=event.voice_id,
+                    sentence, lang, out_path,
+                    voice_id=event.voice_id, emotion=emotion,
                 )
                 if sid and sid in self._cancelled_sessions:
                     try:
@@ -503,6 +566,25 @@ class Daemon:
                     except OSError:
                         pass
 
+            # Utterance complete (or cancelled): end stdin so ffplay drains
+            # its remaining buffer and exits. A nonzero exit here after a
+            # cancel is just the kill we issued concluding — not a fault.
+            if session is not None:
+                try:
+                    await session.close()
+                except Exception as exc:
+                    if sid and sid in self._cancelled_sessions:
+                        logger.debug(
+                            "stream session ended by cancel for session {}",
+                            sid,
+                        )
+                    else:
+                        logger.warning(
+                            "stream session close failed: {}", exc,
+                        )
+                finally:
+                    session = None
+
             full_text = " ".join(spoken_parts) if spoken_parts else ""
             self._last_text = full_text
             if full_text and self.cfg.webhook.enabled:
@@ -513,6 +595,11 @@ class Daemon:
             else:
                 logger.exception("streaming worker failed: {}", exc)
         finally:
+            # Belt and braces: if an exception bailed us out with the shared
+            # ffplay still live, kill it — never leave an orphan process
+            # holding the pipe (abort() reaps and never raises).
+            if session is not None:
+                await session.abort()
             self._current_proc = None
             self._current_session_id = None
             if sid:
@@ -545,12 +632,13 @@ class Daemon:
         caller treats it as "playback already concluded".
         """
         primary = self.tts.primary
-        if not getattr(primary, "supports_streaming", False):
+        if not primary.supports_streaming:
             return False
         try:
             await play_stream(
                 primary.stream(text, lang, voice_id=voice_id, emotion=emotion),
                 on_spawn=on_spawn,
+                input_args=primary.stream_input_args,
             )
             return True
         except Exception as exc:
@@ -583,10 +671,44 @@ class Daemon:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("mcp: prewarm failed ({})", exc)
 
+    async def _prewarm_tts(self) -> None:
+        """Let the primary provider warm its one-off state at daemon start so
+        the user's first notification doesn't eat the cold path. Each provider
+        knows what (if anything) it needs to warm — XTTS loads the model and
+        conditioning latents; API/subprocess providers are no-ops. Best-effort:
+        any failure just defers the cost to the first real event."""
+        primary = self.tts.primary
+        try:
+            await primary.prewarm()
+            logger.info("tts: prewarm ready ({})", primary.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("tts: prewarm failed ({})", exc)
+
+    async def _prewarm_briefing(self) -> None:
+        """Warm the weather cache at daemon start so the first session_start
+        briefing doesn't stall on the weather API. Best-effort: any failure
+        just defers the fetch to the first real briefing."""
+        sb = self.cfg.behavior.session_briefing
+        if not sb.enabled:
+            return
+        try:
+            city = sb.city or detect_city()
+            await self._weather_cache.get(city, sb.weather_timeout_seconds)
+            logger.info("briefing: weather prewarmed ({})", city)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("briefing: weather prewarm failed ({})", exc)
+
     async def run(self) -> None:
         await self.health.start()
-        worker_task = asyncio.create_task(self._worker())
-        prewarm_task = asyncio.create_task(self._prewarm_skills())
+        tasks = [
+            asyncio.create_task(coro)
+            for coro in (
+                self._worker(),
+                self._prewarm_skills(),
+                self._prewarm_tts(),
+                self._prewarm_briefing(),
+            )
+        ]
         try:
             await serve_unix_socket(
                 Path(self.cfg.paths.socket),
@@ -599,9 +721,9 @@ class Daemon:
                 ),
             )
         finally:
-            worker_task.cancel()
-            prewarm_task.cancel()
-            for t in (worker_task, prewarm_task):
+            for t in tasks:
+                t.cancel()
+            for t in tasks:
                 try:
                     await t
                 except asyncio.CancelledError:

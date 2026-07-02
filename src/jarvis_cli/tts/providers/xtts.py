@@ -6,6 +6,8 @@ import-light when XTTS isn't actually used (eg. user opts into ElevenLabs).
 from __future__ import annotations
 
 import asyncio
+import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +19,85 @@ from .base import TTSProvider
 
 _LANG_CODE = {"zh": "zh-cn", "en": "en"}
 
+# XTTS-v2 renders at 24 kHz mono; `inference_stream` yields float chunks we
+# emit as little-endian 16-bit PCM, so ffplay needs these decode hints.
+_SAMPLE_RATE = 24000
+_STREAM_INPUT_ARGS = (
+    # Skip input probing/buffering — the format is fully specified below,
+    # so ffplay can start decoding on the first bytes.
+    "-probesize", "32",
+    "-analyzeduration", "0",
+    "-fflags", "nobuffer",
+    # NB: ffplay (unlike ffmpeg) has no `-ac`; mono must be spelled
+    # `-ch_layout mono` (FFmpeg ≥ 5.1). `-ac 1` makes ffplay exit at spawn.
+    "-f", "s16le", "-ar", str(_SAMPLE_RATE), "-ch_layout", "mono",
+)
+
+# Emotion → (speed multiplier, temperature delta). XTTS has no native
+# emotion conditioning; these nudge the two knobs that audibly shift
+# delivery — pace and sampling variance. Values are deliberately subtle:
+# the Bettany voice reads as unhinged past ~±0.1 temperature.
+_EMOTION_PROSODY: dict[str, tuple[float, float]] = {
+    # session_start greeting — normal pace, a touch more melodic variance.
+    "warm": (1.0, 0.03),
+    "neutral": (1.0, 0.0),
+    # idle nudge — slightly slower and flatter, an aside rather than an alert.
+    "gentle": (0.95, -0.03),
+    # tool_failure — measured pace, minimal variance: bad news read straight.
+    "grave": (0.92, -0.05),
+    # task_complete — brisker and brighter, the closest we get to celebratory.
+    "pleased": (1.05, 0.08),
+    # dry wit lands on a slight slow-down; a small variance bump keeps the
+    # intonation from going fully deadpan.
+    "sardonic": (0.96, 0.03),
+}
+
+
+def _prosody_for(emotion: str | None) -> tuple[float, float]:
+    """(speed multiplier, temperature delta) for `emotion`.
+
+    Unknown or absent emotions are a no-op (1.0, 0.0) — prosody shaping is
+    best-effort garnish, never a reason to fail synthesis.
+    """
+    if emotion is None:
+        return (1.0, 0.0)
+    return _EMOTION_PROSODY.get(emotion, (1.0, 0.0))
+
+
+def _to_int16_pcm(wav: Any) -> Any:
+    """Float waveform → int16 samples.
+
+    Clip rather than peak-normalise: peak-normalising each utterance
+    independently makes loudness jump between lines. XTTS output is already
+    ~[-1, 1]; occasional overshoot is clamped here.
+    """
+    import numpy as np  # type: ignore
+
+    arr = np.clip(np.asarray(wav, dtype=np.float32), -1.0, 1.0)
+    return (arr * 32767).astype(np.int16)
+
 
 class XTTSProvider(TTSProvider):
     name = "xtts"
+    # The GPT decoder is autoregressive — chunked streaming lets ffplay start
+    # playing the first ~half-second while the rest is still decoding, cutting
+    # perceived latency by ~60-70% versus waiting for the whole utterance.
+    supports_streaming = True
+    stream_input_args = _STREAM_INPUT_ARGS
 
     def __init__(self, cfg: XTTSConfig) -> None:
         self.cfg = cfg
         self._model: Any | None = None
         self._latents: dict[str, Any] | None = None
+        # (gpt_cond_latent, speaker_embedding) per language for the streaming
+        # path — loaded from the .pth embedding (en) or computed once from the
+        # ref wav (zh / no embedding) and kept resident.
+        self._cond: dict[str, tuple[Any, Any]] = {}
+        # Serializes the lazy loads: prewarm at daemon start can race the
+        # first real event, and without this both worker threads would load
+        # the multi-GB model. RLock because _conditioning_for may call
+        # _load_model while holding it.
+        self._warm_lock = threading.RLock()
 
     def _ref_audio_for(self, lang: Lang) -> Path:
         path = self.cfg.ref_audio_zh if lang == "zh" else self.cfg.ref_audio_en
@@ -46,32 +119,45 @@ class XTTSProvider(TTSProvider):
         """Lazy-load the XTTS-v2 model. Called at most once per provider lifetime."""
         if self._model is not None:
             return self._model
-        logger.info("Loading XTTS-v2 model from {} on {}", self.cfg.model_dir, self.cfg.device)
-        from TTS.api import TTS  # type: ignore
+        with self._warm_lock:
+            if self._model is not None:
+                return self._model
+            logger.info("Loading XTTS-v2 model from {} on {}", self.cfg.model_dir, self.cfg.device)
+            from TTS.api import TTS  # type: ignore
 
-        self._model = TTS(
-            model_name="tts_models/multilingual/multi-dataset/xtts_v2",
-            progress_bar=False,
-        ).to(self.cfg.device)
-        return self._model
+            self._model = TTS(
+                model_name="tts_models/multilingual/multi-dataset/xtts_v2",
+                progress_bar=False,
+            ).to(self.cfg.device)
+            return self._model
 
     def _load_latents(self) -> dict[str, Any]:
         """Lazy-load the pre-extracted speaker embedding onto the model device."""
         if self._latents is not None:
             return self._latents
-        import torch  # type: ignore
+        with self._warm_lock:
+            if self._latents is not None:
+                return self._latents
+            import torch  # type: ignore
 
-        path = self.cfg.speaker_embedding
-        logger.info("Loading XTTS speaker embedding from {}", path)
-        # The .pth is a plain dict of tensors (not weights-only safe), hence
-        # weights_only=False. Move both latents onto the synthesis device so
-        # inference doesn't trip over a CPU/MPS tensor mismatch.
-        raw = torch.load(path, map_location=self.cfg.device, weights_only=False)
-        self._latents = {
-            "gpt_cond_latent": raw["gpt_cond_latent"].to(self.cfg.device),
-            "speaker_embedding": raw["speaker_embedding"].to(self.cfg.device),
-        }
-        return self._latents
+            path = self.cfg.speaker_embedding
+            logger.info("Loading XTTS speaker embedding from {}", path)
+            # The .pth is a plain dict of tensors (not weights-only safe), hence
+            # weights_only=False. Move both latents onto the synthesis device so
+            # inference doesn't trip over a CPU/MPS tensor mismatch.
+            raw = torch.load(path, map_location=self.cfg.device, weights_only=False)
+            self._latents = {
+                "gpt_cond_latent": raw["gpt_cond_latent"].to(self.cfg.device),
+                "speaker_embedding": raw["speaker_embedding"].to(self.cfg.device),
+            }
+            return self._latents
+
+    def _speed_for(self, text: str) -> float:
+        return (
+            self.cfg.speed_short
+            if len(text) < self.cfg.short_threshold_chars
+            else self.cfg.speed_long
+        )
 
     async def synthesize(
         self,
@@ -87,11 +173,12 @@ class XTTSProvider(TTSProvider):
         _ = voice_id
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        speed = (
-            self.cfg.speed_short
-            if len(text) < self.cfg.short_threshold_chars
-            else self.cfg.speed_long
-        )
+        # Emotion shapes prosody, not timbre: nudge speed and sampling
+        # temperature (clamped — below ~0.3 XTTS turns robotic, above ~0.85
+        # it starts repeating words).
+        speed_mult, temp_delta = _prosody_for(emotion)
+        speed = self._speed_for(text) * speed_mult
+        temperature = min(max(self.cfg.temperature + temp_delta, 0.3), 0.85)
         language = _LANG_CODE.get(lang, "en")
         embedding = self._embedding_path(lang)
 
@@ -107,7 +194,7 @@ class XTTSProvider(TTSProvider):
                     speaker_wav=str(ref),
                     language=language,
                     file_path=str(out_path),
-                    temperature=self.cfg.temperature,
+                    temperature=temperature,
                     speed=speed,
                 )
 
@@ -115,7 +202,6 @@ class XTTSProvider(TTSProvider):
             return out_path
 
         def _run_embedding() -> None:
-            import numpy as np  # type: ignore
             from scipy.io import wavfile  # type: ignore
 
             tts = self._load_model()
@@ -125,19 +211,121 @@ class XTTSProvider(TTSProvider):
                 language=language,
                 gpt_cond_latent=latents["gpt_cond_latent"],
                 speaker_embedding=latents["speaker_embedding"],
-                temperature=self.cfg.temperature,
+                temperature=temperature,
                 speed=speed,
             )
-            wav = np.asarray(out["wav"], dtype=np.float32)
-            # Clip rather than peak-normalise: peak-normalising each utterance
-            # independently makes loudness jump between lines. XTTS output is
-            # already ~[-1, 1]; occasional overshoot is clamped here.
-            wav = np.clip(wav, -1.0, 1.0)
-            sr = int(getattr(tts.synthesizer, "output_sample_rate", 24000))
-            wavfile.write(str(out_path), sr, (wav * 32767).astype(np.int16))
+            sr = int(getattr(tts.synthesizer, "output_sample_rate", _SAMPLE_RATE))
+            wavfile.write(str(out_path), sr, _to_int16_pcm(out["wav"]))
 
         await asyncio.to_thread(_run_embedding)
         return out_path
+
+    def _conditioning_for(self, lang: Lang) -> tuple[Any, Any]:
+        """Resolve (gpt_cond_latent, speaker_embedding) for `lang`, cached.
+
+        English uses the pre-extracted .pth embedding (fast, timbre-stable);
+        Chinese / no-embedding computes the latents once from the ref wav via
+        the model's own encoder. Runs synchronously — callers invoke it from a
+        worker thread.
+        """
+        cached = self._cond.get(lang)
+        if cached is not None:
+            return cached
+        with self._warm_lock:
+            cached = self._cond.get(lang)
+            if cached is not None:
+                return cached
+            if self._embedding_path(lang) is not None:
+                # Same tensors the batch path uses — one load, one resident copy.
+                latents = self._load_latents()
+                cond = (latents["gpt_cond_latent"], latents["speaker_embedding"])
+            else:
+                ref = self._ref_audio_for(lang)
+                if not ref.is_file():
+                    raise FileNotFoundError(f"reference audio missing: {ref}")
+                model = self._load_model()
+                gpt_cond_latent, speaker_embedding = (
+                    model.synthesizer.tts_model.get_conditioning_latents(
+                        audio_path=str(ref),
+                    )
+                )
+                cond = (gpt_cond_latent, speaker_embedding)
+            self._cond[lang] = cond
+            return cond
+
+    async def stream(
+        self,
+        text: str,
+        lang: Lang,
+        voice_id: str | None = None,
+        emotion: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Yield 16-bit PCM chunks as the GPT decoder produces them.
+
+        The blocking `inference_stream` generator runs in a worker thread and
+        feeds chunks back to the event loop through a queue, so playback can
+        begin on the first chunk while the rest is still decoding.
+        """
+        _ = voice_id  # XTTS clones from ref/embedding; no swappable voice id.
+        language = _LANG_CODE.get(lang, "en")
+        # Same prosody shaping as the batch path — see synthesize().
+        speed_mult, temp_delta = _prosody_for(emotion)
+        speed = self._speed_for(text) * speed_mult
+        temperature = min(max(self.cfg.temperature + temp_delta, 0.3), 0.85)
+
+        loop = asyncio.get_running_loop()
+        # None is the end-of-stream marker (PCM payloads are always bytes).
+        queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue()
+        # Set when the consumer goes away (playback cancelled) so the worker
+        # thread stops decoding instead of finishing the whole utterance.
+        stop = threading.Event()
+
+        def _produce() -> None:
+            try:
+                model = self._load_model()
+                gpt_cond_latent, speaker_embedding = self._conditioning_for(lang)
+                for chunk in model.synthesizer.tts_model.inference_stream(
+                    text=text,
+                    language=language,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=temperature,
+                    speed=speed,
+                    # Smaller chunks = earlier first sound; see XTTSConfig.
+                    stream_chunk_size=self.cfg.stream_chunk_size,
+                ):
+                    if stop.is_set():
+                        break
+                    pcm = _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
+                    loop.call_soon_threadsafe(queue.put_nowait, pcm)
+            except Exception as exc:  # noqa: BLE001 — surfaced to the consumer
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        fut = loop.run_in_executor(None, _produce)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            stop.set()
+            await fut
+
+    async def prewarm(self) -> None:
+        """Load the model and English conditioning latents off-thread so the
+        first real notification doesn't eat the multi-second cold start — for
+        XTTS on MPS this load is the single biggest one-off cost."""
+
+        def _warm() -> None:
+            self._load_model()
+            self._conditioning_for("en")
+
+        await asyncio.to_thread(_warm)
 
     async def healthcheck(self) -> bool:
         # English is served by the embedding when present; zh always needs its

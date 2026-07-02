@@ -629,6 +629,9 @@ def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = N
         phrase_target_chars = 70
         phrase_hard_cap = 120
         cancel_on_user_action = true
+        # Drop LLM-phrased events older than this (seconds) at dequeue time,
+        # so a backlog burst doesn't speak stale notifications. 0 disables.
+        stale_event_max_age_seconds = 60.0
 
         [behavior.privacy]
         cloud_redaction = true

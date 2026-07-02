@@ -129,6 +129,7 @@ class PhraseRouter:
 
     async def phrase_stream(
         self, event: Event, lang: Lang,
+        emotion: Emotion | None = None,
     ) -> AsyncIterator[str]:
         """Stream sentences as the LLM produces tokens.
 
@@ -138,15 +139,18 @@ class PhraseRouter:
         as a single chunk — callers get at least one yield in all cases.
         """
         try:
-            async for sentence in self._phrase_stream_inner(event, lang):
+            async for sentence in self._phrase_stream_inner(
+                event, lang, emotion=emotion,
+            ):
                 yield sentence
         except Exception as exc:
             logger.warning("Streaming phrase failed ({}), falling back to batch", exc)
-            text = await self.phrase(event, lang)
+            text = await self.phrase(event, lang, emotion=emotion)
             yield text
 
     async def _phrase_stream_inner(
         self, event: Event, lang: Lang,
+        emotion: Emotion | None = None,
     ) -> AsyncIterator[str]:
         """Build messages and stream sentences from the primary provider."""
         if event.notification_type == "tool_failure":
@@ -165,6 +169,7 @@ class PhraseRouter:
             humor_level=self.cfg.behavior.humor_level,
             avoid=self._last_idle_line
             if event.notification_type == "idle_prompt" else None,
+            emotion=emotion,
         )
         if self.primary is None:
             raise RuntimeError("No primary provider configured")

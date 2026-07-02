@@ -582,21 +582,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cosyvoice3"
-version = "0.1.0+metal"
-source = { url = "https://github.com/SpenserCai/cosyvoice3.rs/releases/download/v0.1.0/cosyvoice3-0.1.0%2Bmetal-cp310-abi3-macosx_11_0_arm64.whl" }
-wheels = [
-    { url = "https://github.com/SpenserCai/cosyvoice3.rs/releases/download/v0.1.0/cosyvoice3-0.1.0%2Bmetal-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:c9c04352fe0e559b7b43129baae7035b25b48922e2296498efc53c39874d4e39" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1078,7 +1063,6 @@ name = "jarvis-cli"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
-    { name = "coqui-tts", extra = ["codec"] },
     { name = "httpx" },
     { name = "langdetect" },
     { name = "loguru" },
@@ -1086,7 +1070,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "cosyvoice3", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "coqui-tts", extra = ["codec"] },
     { name = "fastembed" },
     { name = "numpy" },
     { name = "piper-tts" },
@@ -1097,7 +1081,6 @@ all = [
     { name = "transformers" },
 ]
 cosyvoice = [
-    { name = "cosyvoice3", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "numpy" },
 ]
 piper = [
@@ -1109,6 +1092,7 @@ skills = [
     { name = "pyyaml" },
 ]
 xtts = [
+    { name = "coqui-tts", extra = ["codec"] },
     { name = "pypinyin" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -1125,8 +1109,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "coqui-tts", extras = ["codec"], specifier = ">=0.24" },
-    { name = "cosyvoice3", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'cosyvoice'", url = "https://github.com/SpenserCai/cosyvoice3.rs/releases/download/v0.1.0/cosyvoice3-0.1.0%2Bmetal-cp310-abi3-macosx_11_0_arm64.whl" },
+    { name = "coqui-tts", extras = ["codec"], marker = "extra == 'xtts'", specifier = ">=0.24" },
     { name = "fastembed", marker = "extra == 'skills'", specifier = ">=0.8" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jarvis-cli", extras = ["xtts", "cosyvoice", "piper", "skills"], marker = "extra == 'all'" },
