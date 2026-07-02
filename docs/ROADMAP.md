@@ -1,7 +1,7 @@
 # jarvis-cli 产品迭代路线图
 
 > 本文档是 jarvis-cli 的产品视角汇总:我们是什么、在业界处于什么位置、现有方案怎么做得更深、以及把它当产品迭代时值得加的功能。
-> 调研时点:2026-06。来源见文末。
+> 调研时点:2026-06。状态更新:2026-07-03(streaming/情感化/事件扩展/plugin Phase 1-2 已落地)。来源见文末。
 
 ---
 
@@ -37,7 +37,7 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 | 成本 | 多依赖云端 API | **本地优先、零成本默认**,免费云端多级兜底 |
 
 **护城河**:人格化 + 本地零成本 + 免费 fallback 链 + 通知/路由合一。
-**差距**(竞品有我们没有):hook 事件覆盖少(4/26)、无 plugin 化分发、无自然语言安装。(cost/token 可观测、statusline 这类视觉功能不在我们的目标内 —— 见 §5。)
+**差距**(竞品有我们没有,2026-07 更新):hook 事件覆盖 15/26(T1+T2 已扩)、无双向语音、安装仍需 PyPI + daemon bootstrap(plugin Phase 3-4 未完)。streaming 管线、情感化语音、plugin 化分发(Phase 1-2)已闭环。(cost/token 可观测、statusline 这类视觉功能不在我们的目标内 —— 见 §5。)
 
 ---
 
@@ -50,56 +50,140 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
   - **two-stage / 分层检索**:先粗筛候选域再精排,top-k 控制 context。我们 top_k=5 已轻量,但可在 MCP registry 变大时引入。
   - **reasoning-aware reranking**(MemReranker):候选排序时带入意图推理而非纯余弦。
 
-### 3.2 TTS / 延迟
-- **现状**:CosyVoice3 / XTTS(Bettany 克隆)/ Piper,已有 `play_stream` 流式。
-- **可演进**:
-  - **streaming-first**:措辞 LLM token 流 → TTS 流 → 播放流,重叠而非串行(业界 TTFA 已到 40–150ms)。
-  - **更快模型**:Voxtral(Mistral 4B 开源、~70ms、可量化本地跑)、Cartesia Sonic(40ms)作为可选 provider。
-  - **情感/语气随事件**:报错用凝重语气、完成用轻快语气。
+### 3.2 Streaming 管线 ✅ 已落地(2026-07)
 
-### 3.3 性能(本会话已落地)
-- ✅ `_on_query` 的 skills/mcp 两条 pipeline 已 `asyncio.gather` 并行。
-- ✅ 检索热路径单次 tokenize、whole-word 列表合并。
-- 继续:为热路径加轻量 profiling/计时日志,数据驱动下一步。
+- **现状**:LLM token 流 → `chunker.py` 句级分块 → XTTS `inference_stream` 逐句 raw PCM → **单 ffplay 会话**(`StreamPlayer`)无缝播放。config 开关 `behavior.streaming_pipeline`(默认已开)。
+- **落地中的关键修复**:ffplay 无 `-ac` 选项(单声道须 `-ch_layout mono`),此前流式一直在静默回退到文件合成;修复后流式首次真正生效。ffplay stderr 现随异常上抛,同类问题日志可见。
+- **延迟已做**:`stream_chunk_size=10`(首块解码时间减半)、ffplay `-probesize 32 -analyzeduration 0 -fflags nobuffer`、XTTS 模型/latents/天气 daemon 启动预热、Ollama `keep_alive=30m` 常驻。
+- **剩余**(见 §3.4):措辞预取流水线(积压场景)、chunker 首块提前切分、sounddevice 进程内播放。
+
+### 3.3 情感化语音 ✅ 已落地(2026-07)
+
+- `types.py` `Emotion` + `EVENT_EMOTION` 映射(warm/grave/pleased/gentle/sardonic/neutral),`prompt.py` 统一 `_EMOTION_CLAUSES` 注入语气 → 所有 TTS 引擎从文字层受益。
+- ElevenLabs:emotion → `voice_settings` preset。**XTTS:emotion → 韵律映射**(语速 ×0.92~1.05、温度 ±0.08,clamp [0.3, 0.85])——比原计划的多 embedding 方案更轻,流式/批处理两路径统一生效。
+- 流式管线同样穿透 emotion(phrase_stream → 逐句 TTS → 回退合成)。
+- 剩余:CosyVoice instruct 接口(需上游)、XTTS 多 embedding(按需)。
+
+### 3.4 性能
+
+已落地(2026-07 累计):
+- ✅ `_on_query` skills/mcp 双 pipeline `asyncio.gather` 并行;检索热路径单次 tokenize。
+- ✅ Ollama `keep_alive=30m`(措辞 + verifier),模型常驻免冷载。
+- ✅ daemon 启动预热:XTTS 模型+latents、Piper en 声音、天气缓存(provider `prewarm()` 钩子)。
+- ✅ 出队超龄丢弃(`stale_event_max_age_seconds=60`):积压不再播过期通知。
+- ✅ XTTS `stream_chunk_size=10` + ffplay 低延迟 flags + 单 ffplay 会话:首音频与句间衔接。
+- ✅ 取消即停:XTTS 解码线程带 stop 信号,cancel 不再白烧 GPU。
+
+进行中 / 待做(按优先级):
+1. **措辞预取流水线**:播放事件 N 时预措辞 N+1,积压场景每条 −1~2s。
+2. **chunker 首块提前切分**:首块允许逗号切分,首音频 −0.5~1s(需试听)。
+3. **热路径计时日志**:phrase/TTS 首字节/总时长分段计时,数据驱动下一步。
+4. **sounddevice 进程内播放**:替代 ffplay 子进程,起播趋零、取消即时(大改动)。
+5. **措辞模型 A/B**(qwen3:4b vs 8b):首句 −0.5~1s,质量需试听。
 
 ---
 
 ## 4. 新功能 Roadmap(产品迭代)
 
 ### Quick wins(低成本、补竞品差距)
-| 功能 | 说明 | 价值 |
+
+| 功能 | 说明 | 价值 | 估时 |
+|---|---|---|---|
+| ✅ **Hook 事件扩展** | 7→15/26,T1+T2 全部落地(T2 opt-in) | 已完成 | — |
+| ✅ **情感化 prompt 重构** | `_EMOTION_CLAUSES` 统一,全 TTS 引擎受益 | 已完成 | — |
+| ✅ **报错语音** | `PostToolUseFailure` → 凝重措辞 | 已完成 | — |
+| ✅ **完成播报** | `Stop`/`SubagentStop` 事件 | 已完成 | — |
+| ✅ **webhook / 远程通知** | fire-and-forget POST(Bark/ntfy/Slack/Discord) | 已完成 | — |
+
+#### Hook 事件扩展实施清单 ✅ T1+T2 已全部落地(T1 默认开启,T2 opt-in)
+
+每个新事件的实现模式完全一致:`hook_client.py` 加 elif → `types.py` 加类型 → `templates.py` 加中英模板 → `prompt.py` 加 clause → `install.py` 注册。
+
+**Tier 1 — 高价值(~2h)**:
+
+| CC Hook | 通知类型 | Jarvis 语音示例 |
 |---|---|---|
-| **更多 hook 事件** | 现只用 4 个,CC 有 ~26 个生命周期。接入 `PostToolUseFailure`(报错语音)、`Stop`(完成播报)、`PreCompact`(上下文压缩提醒)、`SubagentStop`、rate-limit alert | 高,几乎零架构改动 |
-| **报错语音** | 工具失败时 Jarvis 用凝重口吻提示"Sir, the build failed on…" | 高,刚需 |
-| **webhook / 远程通知** | 离开电脑时推手机/IM(对标 echook) | 中 |
+| `PreCompact` | `context_compacting` | "Sir, the conversation context is about to be compressed." |
+| `RateLimitError` | `rate_limited` | "Sir, we've hit the rate limit — a brief intermission." |
+| `SubagentStart` | `subagent_spawned` | "Sir, a sub-agent has been dispatched." |
+| `MaxTurnsReached` | `max_turns_reached` | "Sir, the turn limit has been reached — Claude has stopped." |
+
+**Tier 2 — 中价值(~1.5h)**:
+
+| CC Hook | 通知类型 | Jarvis 语音示例 |
+|---|---|---|
+| `APIError` | `api_error` | "Sir, the API has returned an error." |
+| `SessionStop` | `session_end` | "Until next time, sir." |
+| `PostCompact` | `context_compacted` | "Context compacted, sir. We carry on." |
+| `ContextWindowOverflow` | `context_overflow` | "Sir, the context window is full." |
 
 ### 中等投入
-| 功能 | 说明 |
-|---|---|
-| **会话记忆 / 主动总结** | 长任务结束语音总结"这轮改了 X、跑了 Y";跨会话上下文(MemTool 思路) |
-| **plugin 化分发** | 打包成 CC plugin(skills+hooks+MCP+monitor),支持自然语言安装("tell your AI to install") |
-| **可观测性** | 事件流监控/面板(对标 multi-agent-observability 1.5k⭐、claude-code-otel) |
-| **history-aware 路由** | 见 3.1,把多轮上下文喂进 gate/verifier |
+
+| 功能 | 说明 | 估时 |
+|---|---|---|---|
+| ✅ **Streaming 管线** | 已落地,详见 §3.2 | — |
+| ✅ **ElevenLabs 情感 preset** | 已落地,连同 XTTS 韵律映射,详见 §3.3 | — |
+| **Plugin 化分发 Phase 3-4** | 升级 UX(`doctor` 诊断、say-only 检测)+ marketplace 提交;Phase 1-2 已完成 | 1-2 天 |
+| **多 agent 协同感知** | orchestrate 场景播报各 subagent 进度(`subagent_spawned` 事件已打底) | — |
+| **会话记忆 / 主动总结** | 长任务结束语音总结"这轮改了 X、跑了 Y";跨会话上下文(MemTool 思路) | — |
+| **history-aware 路由** | 见 §3.1,把多轮上下文喂进 gate/verifier | — |
+
+#### Plugin 化分发方案
+
+**当前安装摩擦**(按严重度):CosyVoice wheel 来自 GitHub URL(PyPI 拒绝) > 模型下载 ~7GB > 六步手动流程 > hooks 绝对路径 > launchd 手动管理。
+
+**两层架构**:
+
+```
+Layer 1: CC Plugin (轻量,自动注册 hooks)
+├─ .claude-plugin/plugin.json     # 元数据
+├─ hooks/hooks.json               # ${CLAUDE_PLUGIN_ROOT} 路径,CC 自动注册
+├─ hooks/jarvis-hook.sh           # 薄 wrapper → jarvis-cli-hook
+└─ scripts/install-daemon.sh      # 一键 bootstrap
+
+Layer 2: PyPI 包 (核心引擎)
+├─ jarvis-cli                     # core: httpx + loguru + say 兜底,零下载开箱即用
+├─ jarvis-cli[piper]              # +Piper TTS ~15MB
+├─ jarvis-cli[cosyvoice]          # 单独 pip install cosyvoice3
+├─ jarvis-cli[xtts]               # +PyTorch + coqui-tts
+└─ jarvis-cli[skills]             # +fastembed + jina 模型 ~640MB
+```
+
+**分阶段**:
+1. PyPI 发布(剥离 cosyvoice 直接 URL,core 只含轻量依赖)— 1-2 天
+2. CC Plugin 包装(`hooks.json` + bootstrap 脚本)— 1-2 天
+3. 升级 UX(`SessionStart` 检测 say-only 并建议升级,`jarvis-cli doctor` 诊断)— 1 天
+4. 提交官方 marketplace — 持续
 
 ### 愿景 / 大投入
 | 功能 | 说明 |
 |---|---|
 | **双向对话** | 从单向通知 → 语音问答("Jarvis,刚才那个报错怎么回事") |
-| **多 agent 协同感知** | orchestrate 场景下播报各 subagent 进度 |
 | **跨设备** | daemon 已多客户端,扩到手机/手表的环境感知 |
 
 ---
 
 ## 5. 优先级建议(下一步)
 
-按 **价值 ÷ 成本 × 差异化** 排序,建议下一轮迭代先打两个 quick win:
+按 **价值 ÷ 成本 × 差异化** 排序(2026-07-03 刷新;原第一/二梯队已全部落地):
 
-1. **报错语音**(`PostToolUseFailure` → 凝重措辞)——刚需、零架构改动、人格化优势直接体现。
-2. **完成播报**(`Stop` 事件)——补齐和 echook 等的基本对位。
+### 第一梯队:性能第二波(见 §3.4)
+
+1. **措辞预取流水线** + **热路径计时日志**——积压场景每条 −1~2s,计时数据驱动后续。
+2. **chunker 首块提前切分**——首音频再 −0.5~1s(需试听把关)。
+
+### 第二梯队:产品增量
+
+3. **多 agent 协同感知**——orchestrate 重度使用场景,`subagent_spawned` 事件已打底,差播报内容与节流策略。
+4. **Plugin 化分发 Phase 3-4**——`jarvis-cli doctor`、say-only 升级提示、marketplace 提交。
+
+### 第三梯队:做深(按需)
+
+5. **sounddevice 进程内播放**(§3.4)——起播趋零、取消即时。
+6. History-aware 路由、会话记忆 / 主动总结。
+7. XTTS 多 embedding、CosyVoice instruct(需上游)。
 
 > 视觉/纯数据类功能(状态栏、成本面板)不进主干:jarvis 的主轴是语音/听觉提醒,这类活交给 ccstatusline 等专门工具。
-
-这三个都复用现有 hook→daemon→phrase→TTS 管线,不碰核心架构,且把"人格化"卖点扩展到更多时刻。history-aware 路由与 streaming TTS 作为第二梯队的"做深"项。
 
 ---
 
