@@ -2,10 +2,11 @@
 
 This path (config flag `behavior.streaming_pipeline`) overlaps LLM token
 generation with per-sentence TTS playback. All streamed sentences feed ONE
-ffplay session (a `StreamPlayer`, spawned lazily) so consecutive sentences
-play gaplessly; these tests lock the routing decision, the single-session
-feed loop, cancel handling, emotion threading, and the per-sentence file
-fallback.
+audio sink (a `StreamPlayer`, or the in-process PCM sink for raw-PCM
+providers — spawned lazily) so consecutive sentences play gaplessly; these
+tests lock the routing decision, the single-session feed loop, cancel
+handling, emotion threading, the per-sentence file fallback, and the
+PCM-vs-ffplay sink selection.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ class _FakePrimary:
     name = "fake-tts"
     supports_streaming = True
     stream_input_args = None
+    stream_pcm = None  # container-format stream → ffplay path by default
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None]] = []
@@ -275,3 +277,67 @@ async def test_streaming_feed_failure_falls_back_to_file_synth():
     assert sessions[1].fed == [b"Second sentence here."]
     assert sessions[1].closed is True
     assert sessions[1].aborted is False
+
+
+def _fake_open_pcm_sink(sink: _FakeSession, seen: dict):
+    """Stand-in for player.open_pcm_sink recording the PCM spec it was given."""
+
+    async def _open(*, rate, channels, input_args=None, on_spawn=None):
+        seen.update(rate=rate, channels=channels, input_args=input_args)
+        if on_spawn is not None:
+            on_spawn(MagicMock())
+        return sink
+
+    return _open
+
+
+@pytest.mark.asyncio
+async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
+    """A raw-PCM primary (stream_pcm set) must get the in-process sounddevice
+    sink — with the provider's rate/channels — instead of an ffplay spawn."""
+    d = Daemon(Config())
+
+    async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
+        yield "One sentence, straight to CoreAudio."
+
+    d.router.phrase_stream = _phrase_stream
+    primary = _FakePrimary()
+    primary.stream_pcm = (24000, 1)
+    d.tts.primary = primary
+
+    sink = _FakeSession()
+    seen: dict = {}
+    with patch(
+        "jarvis_cli.daemon.main.open_pcm_sink",
+        side_effect=_fake_open_pcm_sink(sink, seen),
+    ), patch("jarvis_cli.daemon.main.StreamPlayer") as stream_player:
+        await d._process_one_streaming(_llm_event())
+
+    stream_player.spawn.assert_not_called()
+    assert seen["rate"] == 24000 and seen["channels"] == 1
+    assert sink.fed == [b"One sentence, straight to CoreAudio."]
+    assert sink.closed is True
+
+
+@pytest.mark.asyncio
+async def test_try_stream_pcm_provider_routes_through_pcm_sink():
+    """The batch whole-text path shares the sink selection: stream_pcm set →
+    open_pcm_sink (fed and closed), never play_stream."""
+    d = Daemon(Config())
+    primary = _FakePrimary()
+    primary.stream_pcm = (24000, 1)
+    d.tts.primary = primary
+
+    sink = _FakeSession()
+    seen: dict = {}
+    with patch(
+        "jarvis_cli.daemon.main.open_pcm_sink",
+        side_effect=_fake_open_pcm_sink(sink, seen),
+    ), patch("jarvis_cli.daemon.main.play_stream") as play_stream:
+        ok = await d._try_stream("Hello sir.", "en", None)
+
+    assert ok is True
+    play_stream.assert_not_called()
+    assert seen["rate"] == 24000 and seen["channels"] == 1
+    assert sink.fed == [b"Hello sir."]
+    assert sink.closed is True

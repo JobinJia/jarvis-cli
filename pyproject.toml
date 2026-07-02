@@ -45,6 +45,14 @@ piper = [
     "piper-tts>=1.4",
 ]
 
+# In-process raw-PCM playback (sounddevice → PortAudio → CoreAudio): kills the
+# ~100-150ms ffplay spawn + SDL device-open per utterance and makes cancel an
+# instant buffer discard instead of a SIGKILL. Kept optional so the core stays
+# httpx+loguru+langdetect; without it streaming falls back to ffplay.
+audio = [
+    "sounddevice>=0.5",
+]
+
 # RAG-over-skills: bound CC/Codex startup context by surfacing skills per-turn
 # via local embedding retrieval instead of listing every description at
 # startup. fastembed runs the ONNX model on CPU (pulls onnxruntime + tokenizers
@@ -60,7 +68,7 @@ skills = [
 # Install everything in one shot so `uv pip install -e '.[all]'` never
 # silently drops one extra's deps while installing another's.
 all = [
-    "jarvis-cli[xtts,cosyvoice,piper,skills]",
+    "jarvis-cli[xtts,cosyvoice,piper,audio,skills]",
 ]
 
 [project.scripts]

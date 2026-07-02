@@ -43,6 +43,14 @@ class BoundedEventQueue:
                 await self._cond.wait()
             return self._deque.popleft()
 
+    def peek(self) -> Event | None:
+        """Return the head event without removing it; None when empty.
+
+        Synchronous for the same reason as drop_matching: callers (the
+        worker's prefetch) run on the same asyncio loop as put/get.
+        """
+        return self._deque[0] if self._deque else None
+
     def drop_matching(self, predicate) -> int:
         """Remove every queued event for which predicate(event) is True.
 

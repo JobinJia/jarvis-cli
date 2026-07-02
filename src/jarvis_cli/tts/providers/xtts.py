@@ -84,6 +84,9 @@ class XTTSProvider(TTSProvider):
     # perceived latency by ~60-70% versus waiting for the whole utterance.
     supports_streaming = True
     stream_input_args = _STREAM_INPUT_ARGS
+    # Same byte stream, described for the in-process sounddevice sink; the
+    # ffplay flags above remain the fallback decode spec.
+    stream_pcm = (_SAMPLE_RATE, 1)
 
     def __init__(self, cfg: XTTSConfig) -> None:
         self.cfg = cfg

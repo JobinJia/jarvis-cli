@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from jarvis_cli.daemon.queue import BoundedEventQueue
@@ -32,6 +30,24 @@ async def test_queue_drops_oldest_when_full():
     assert a.tool_name == "T3"
     assert b.tool_name == "T4"
     assert q.dropped_count == 3
+
+
+@pytest.mark.asyncio
+async def test_queue_peek_returns_head_without_removing():
+    q = BoundedEventQueue(maxsize=10)
+    await q.put_or_drop(_ev(1))
+    await q.put_or_drop(_ev(2))
+    head = q.peek()
+    assert head is not None and head.tool_name == "T1"
+    assert q.size == 2
+    # peek() must hand back the SAME object get() will return — the worker's
+    # prefetch cache is keyed on event identity.
+    assert (await q.get()) is head
+
+
+def test_queue_peek_empty_returns_none():
+    q = BoundedEventQueue(maxsize=10)
+    assert q.peek() is None
 
 
 @pytest.mark.asyncio

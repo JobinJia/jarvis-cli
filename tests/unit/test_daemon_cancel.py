@@ -73,6 +73,7 @@ async def test_try_stream_returns_true_when_session_cancelled():
     # Stub a streaming primary; play_stream is patched to raise.
     d.tts.primary = MagicMock()
     d.tts.primary.supports_streaming = True
+    d.tts.primary.stream_pcm = None  # container stream → ffplay path
 
     async def _stream_iter(*args, **kwargs):
         yield b"x"
@@ -101,6 +102,7 @@ async def test_try_stream_returns_false_on_real_tts_failure():
 
     d.tts.primary = MagicMock()
     d.tts.primary.supports_streaming = True
+    d.tts.primary.stream_pcm = None  # container stream → ffplay path
 
     async def _stream_iter(*args, **kwargs):
         yield b"x"

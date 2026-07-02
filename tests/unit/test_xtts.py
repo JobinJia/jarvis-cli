@@ -242,6 +242,8 @@ async def test_xtts_stream_yields_pcm_chunks(tmp_path: Path):
         "-fflags", "nobuffer",
         "-f", "s16le", "-ar", "24000", "-ch_layout", "mono",
     )
+    # Same byte stream described for the in-process sounddevice sink.
+    assert p.stream_pcm == (24000, 1)
 
     class _Chunk:
         def __init__(self, arr): self._arr = arr

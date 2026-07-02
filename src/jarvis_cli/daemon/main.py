@@ -6,6 +6,8 @@ import asyncio
 import sys
 import tempfile
 import time
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from loguru import logger
@@ -22,7 +24,14 @@ from ..phrase.providers.openai import OpenAIProvider
 from ..phrase.providers.siliconflow import SiliconFlowProvider
 from ..phrase.providers.zhipu import ZhipuProvider
 from ..phrase.router import PhraseRouter
-from ..player import StreamPlayer, play, play_stream
+from ..player import (
+    Cancellable,
+    PCMPlayer,
+    StreamPlayer,
+    open_pcm_sink,
+    play,
+    play_stream,
+)
 from ..tts.engine import TTSEngine
 from ..tts.providers.base import TTSProvider
 from ..tts.providers.cosyvoice import CosyVoiceProvider
@@ -30,7 +39,7 @@ from ..tts.providers.elevenlabs import ElevenLabsProvider
 from ..tts.providers.piper import PiperProvider
 from ..tts.providers.say import SayProvider
 from ..tts.providers.xtts import XTTSProvider
-from ..types import Event, emotion_for
+from ..types import Event, Lang, emotion_for
 from .dedup import DedupWindow
 from .health import HealthServer
 from .listener import serve_unix_socket
@@ -105,9 +114,23 @@ class Daemon:
         # Keep strong refs to in-flight webhook tasks so they aren't garbage
         # collected mid-flight (asyncio only holds weak refs to tasks).
         self._webhook_tasks: set[asyncio.Task] = set()
-        self._current_proc: asyncio.subprocess.Process | None = None
+        # The in-flight playback handle: an afplay/ffplay Process or a
+        # PCMPlayer — anything cancel_session can kill() (see Cancellable).
+        self._current_proc: Cancellable | None = None
         self._current_session_id: str | None = None
         self._cancelled_sessions: set[str] = set()
+        # Phrase prefetch: while event N plays, the worker phrases the event
+        # at the queue head so N+1 skips its LLM round-trip. Keyed by event
+        # IDENTITY (the queue hands back the same object), so a cached entry
+        # for a dropped/cancelled event simply never matches. No locking:
+        # everything here runs on the one event loop.
+        self._prefetched: tuple[Event, str, Lang] | None = None
+        # Whether the event currently being dispatched got its text from the
+        # prefetch cache — set by _worker right before dispatch, read by
+        # _process_one for the TIMING log. An instance attr (not a kwarg)
+        # so _process_one's signature — and every test that patches it —
+        # stays unchanged.
+        self._dispatch_prefetched: bool = False
         # Throttle Jarvis's voice alert when the local phrase provider
         # quietly slips onto the cloud fallback. 5 min between announcements
         # is enough for the user to notice without spamming during an
@@ -191,6 +214,9 @@ class Daemon:
     async def cancel_session(self, session_id: str) -> None:
         """Cancel any in-flight audio for `session_id` and drop its queued events."""
         self._cancelled_sessions.add(session_id)
+        # No need to touch `_prefetched` here: dropping the queued event means
+        # the worker's identity check never matches it, so the cached phrase
+        # is discarded on the next dequeue.
         self.queue.drop_matching(lambda e: e.session_id == session_id)
         proc = self._current_proc
         if proc is not None and self._current_session_id == session_id:
@@ -349,27 +375,89 @@ class Daemon:
             return False
         return time.time() - event.received_at > max_age
 
+    async def _prefetch_next(self) -> None:
+        """Phrase the event at the queue head while the current one plays.
+
+        Zero-overhead when there's nothing to do: an empty queue makes peek()
+        return None and we exit immediately, so the common single-event case
+        is untouched. Pre-baked text and session_start have no LLM round-trip
+        to hide (the briefing composes inline), and a stale head is about to
+        be dropped at dequeue anyway — skip all of those. Best-effort: any
+        failure just means the worker phrases the event itself, as before.
+        """
+        try:
+            nxt = self.queue.peek()
+            if (
+                nxt is None
+                or nxt.text is not None
+                or nxt.notification_type == "session_start"
+                or self._is_stale(nxt)
+            ):
+                return
+            lang = (
+                detect_for(nxt.cwd)
+                if self.cfg.behavior.voice_language == "auto"
+                else self.cfg.behavior.voice_language  # type: ignore[assignment]
+            )
+            emotion = emotion_for(nxt.notification_type)
+            text = await self.router.phrase(nxt, lang=lang, emotion=emotion)
+            self._prefetched = (nxt, text, lang)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("prefetch failed ({})", exc)
+
     async def _worker(self) -> None:
         while True:
             event = await self.queue.get()
+            # Stale check on the ORIGINAL event, before any prefetch
+            # consumption — a prefetched phrase for a stale event must not
+            # resurrect it via the pre-baked exemption in _is_stale.
             if self._is_stale(event):
                 logger.debug(
                     "DROP stale age={:.0f}s key={}",
                     time.time() - event.received_at, event.dedup_key(),
                 )
                 continue
+            # Consume the prefetch cache. Identity check: the queue hands
+            # back the same object it stored, so a hit means THIS event was
+            # phrased during the previous playback. A miss means the cached
+            # event was dropped (cancel_session) or otherwise superseded —
+            # the cache is garbage either way, so always clear it.
+            prefetched = (
+                self._prefetched is not None and self._prefetched[0] is event
+            )
+            if prefetched:
+                _, text, lang = self._prefetched
+                event = replace(event, text=text, lang=lang)
+            self._prefetched = None
+            # Kick off phrasing for the event now at the queue head so its
+            # LLM round-trip overlaps this event's playback. Routing
+            # consequence: a prefetched event carries `text`, so
+            # _wants_streaming returns False and it flows through the batch
+            # path's pre-baked branch — exactly what we want under backlog
+            # (full text ready before playback starts beats intra-event
+            # streaming).
+            prefetch_task = asyncio.create_task(self._prefetch_next())
+            self._dispatch_prefetched = prefetched
             if self._wants_streaming(event):
                 await self._process_one_streaming(event)
             else:
                 await self._process_one(event)
+            # Usually already done — playback outlasts phrasing. Awaiting
+            # keeps the task lifecycle clean (no orphans, errors surface).
+            await prefetch_task
 
     async def _process_one(self, event: Event) -> None:
         sid = event.session_id
+        started = time.monotonic()
+        # Capture-and-reset the worker's prefetch flag so a direct call
+        # (tests, future callers) never inherits a stale True.
+        prefetched = self._dispatch_prefetched
+        self._dispatch_prefetched = False
         if sid and sid in self._cancelled_sessions:
             # Stale cancel signal preceded the event; clear and play normally.
             self._cancelled_sessions.discard(sid)
 
-        def _register(proc: asyncio.subprocess.Process) -> None:
+        def _register(proc: Cancellable) -> None:
             self._current_proc = proc
             self._current_session_id = sid
 
@@ -379,6 +467,7 @@ class Daemon:
         emotion = emotion_for(event.notification_type)
 
         try:
+            phrase_started = time.monotonic()
             if event.text is not None:
                 # Caller pre-baked the phrase; skip the LLM entirely.
                 text = event.text
@@ -404,6 +493,18 @@ class Daemon:
                 text = await self.router.phrase(
                     event, lang=lang, emotion=emotion,
                 )
+            # Stage timing (DEBUG): phrase covers the LLM/briefing cost above
+            # (~0 for pre-baked/prefetched text); total spans through playback.
+            phrase_ms = (time.monotonic() - phrase_started) * 1000
+
+            def _log_timing() -> None:
+                logger.debug(
+                    "TIMING type={} phrase_ms={:.0f} total_ms={:.0f} "
+                    "prefetched={}",
+                    event.notification_type, phrase_ms,
+                    (time.monotonic() - started) * 1000, prefetched,
+                )
+
             self._last_text = text
             # Remote push (opt-in). Fire-and-forget as a detached task so the
             # network call runs CONCURRENTLY with audio playback below and can
@@ -429,6 +530,7 @@ class Daemon:
                 on_spawn=_register, session_id=sid,
                 emotion=emotion,
             ):
+                _log_timing()
                 return
             # Skip synth fallback if a cancel arrived between stream attempt
             # and now — otherwise the same line gets re-synthesized + replayed.
@@ -458,6 +560,7 @@ class Daemon:
                     out_path.unlink()
                 except OSError:
                     pass
+            _log_timing()
         except Exception as exc:
             if sid and sid in self._cancelled_sessions:
                 logger.debug("playback cancelled for session {}", sid)
@@ -474,15 +577,20 @@ class Daemon:
 
         For each sentence the LLM produces, we synthesize and play it
         immediately — so the first sentence is audible while the LLM is still
-        generating the rest. All streamed sentences feed ONE ffplay session
-        (spawned lazily on the first sentence) so consecutive sentences play
-        gaplessly instead of paying a process-spawn pause between each.
+        generating the rest. All streamed sentences feed ONE audio sink
+        (in-process PCM or ffplay — see _spawn_stream_sink; spawned lazily on
+        the first sentence) so consecutive sentences play gaplessly instead
+        of paying a device-open/process-spawn pause between each.
         """
         sid = event.session_id
+        started = time.monotonic()
+        # Stage timing (DEBUG): first successful feed is our proxy for first
+        # audible audio — the whole point of this pipeline is shrinking it.
+        first_feed_at: float | None = None
         if sid and sid in self._cancelled_sessions:
             self._cancelled_sessions.discard(sid)
 
-        def _register(proc: asyncio.subprocess.Process) -> None:
+        def _register(proc: Cancellable) -> None:
             self._current_proc = proc
             self._current_session_id = sid
 
@@ -491,7 +599,7 @@ class Daemon:
         # call — streamed lines must not sound flatter than batch ones.
         emotion = emotion_for(event.notification_type)
 
-        session: StreamPlayer | None = None
+        session: PCMPlayer | StreamPlayer | None = None
         try:
             lang = (
                 detect_for(event.cwd)
@@ -517,14 +625,15 @@ class Daemon:
                 if primary.supports_streaming:
                     try:
                         if session is None:
-                            session = await StreamPlayer.spawn(
-                                input_args=primary.stream_input_args,
-                                on_spawn=_register,
+                            session = await self._spawn_stream_sink(
+                                primary, on_spawn=_register,
                             )
                         await session.feed(primary.stream(
                             sentence, lang,
                             voice_id=event.voice_id, emotion=emotion,
                         ))
+                        if first_feed_at is None:
+                            first_feed_at = time.monotonic()
                         continue
                     except Exception as exc:
                         if sid and sid in self._cancelled_sessions:
@@ -566,9 +675,10 @@ class Daemon:
                     except OSError:
                         pass
 
-            # Utterance complete (or cancelled): end stdin so ffplay drains
-            # its remaining buffer and exits. A nonzero exit here after a
-            # cancel is just the kill we issued concluding — not a fault.
+            # Utterance complete (or cancelled): close the sink so it drains
+            # its remaining buffer (ffplay: stdin EOF; PCM: StopStream). A
+            # close error after a cancel is just the kill we issued
+            # concluding — not a fault.
             if session is not None:
                 try:
                     await session.close()
@@ -587,6 +697,17 @@ class Daemon:
 
             full_text = " ".join(spoken_parts) if spoken_parts else ""
             self._last_text = full_text
+            # first_feed_ms=-1 means no sentence ever streamed (every one
+            # took the file-synth fallback, or the LLM produced nothing).
+            logger.debug(
+                "TIMING-STREAM type={} first_feed_ms={:.0f} total_ms={:.0f} "
+                "sentences={}",
+                event.notification_type,
+                (first_feed_at - started) * 1000
+                if first_feed_at is not None else -1.0,
+                (time.monotonic() - started) * 1000,
+                len(spoken_parts),
+            )
             if full_text and self.cfg.webhook.enabled:
                 self._fire_webhook(event, full_text)
         except Exception as exc:
@@ -615,31 +736,67 @@ class Daemon:
         self._webhook_tasks.add(task)
         task.add_done_callback(self._webhook_tasks.discard)
 
+    async def _spawn_stream_sink(
+        self,
+        primary: TTSProvider,
+        *,
+        on_spawn: Callable[[Cancellable], None] | None = None,
+    ) -> PCMPlayer | StreamPlayer:
+        """The one sink-selection point for both streaming call sites: raw-PCM
+        providers (stream_pcm set) get the in-process sounddevice sink — which
+        itself falls back to ffplay when sounddevice is unavailable — while
+        container-format providers (MP3 from ElevenLabs) keep ffplay, the only
+        decoder we have for those bytes."""
+        if primary.stream_pcm is not None:
+            rate, channels = primary.stream_pcm
+            return await open_pcm_sink(
+                rate=rate, channels=channels,
+                input_args=primary.stream_input_args,
+                on_spawn=on_spawn,
+            )
+        return await StreamPlayer.spawn(
+            input_args=primary.stream_input_args, on_spawn=on_spawn,
+        )
+
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
         *, on_spawn=None, session_id: str | None = None,
         emotion: str | None = None,
     ) -> bool:
-        """If the primary TTS supports streaming, pipe chunks straight to
-        ffplay so playback begins before synthesis completes. Returns True
+        """If the primary TTS supports streaming, pipe chunks straight to the
+        audio sink so playback begins before synthesis completes. Returns True
         on success (or on cancel — see below); False on any other failure so
         the caller can fall back to the file-based synth+afplay path.
 
-        When the worker kills ffplay to cancel playback, play_stream raises
-        a RuntimeError. That is NOT a TTS failure — re-synthesizing and
-        falling back to afplay would replay the line we just killed.
-        Detect this by checking `_cancelled_sessions` and return True so the
-        caller treats it as "playback already concluded".
+        When the worker kill()s the sink to cancel playback, the feed raises
+        (broken pipe for ffplay, PortAudioError for the PCM sink). That is
+        NOT a TTS failure — re-synthesizing and falling back to afplay would
+        replay the line we just killed. Detect this by checking
+        `_cancelled_sessions` and return True so the caller treats it as
+        "playback already concluded".
         """
         primary = self.tts.primary
         if not primary.supports_streaming:
             return False
         try:
-            await play_stream(
-                primary.stream(text, lang, voice_id=voice_id, emotion=emotion),
-                on_spawn=on_spawn,
-                input_args=primary.stream_input_args,
-            )
+            chunks = primary.stream(text, lang, voice_id=voice_id, emotion=emotion)
+            if primary.stream_pcm is not None:
+                sink = await self._spawn_stream_sink(primary, on_spawn=on_spawn)
+                try:
+                    await sink.feed(chunks)
+                except BaseException:
+                    # Conclude the sink without masking the real cause
+                    # (abort never raises), then let the error decide
+                    # cancel-vs-failure below.
+                    await sink.abort()
+                    raise
+                await sink.close()
+            else:
+                await play_stream(
+                    chunks,
+                    on_spawn=on_spawn,
+                    input_args=primary.stream_input_args,
+                )
             return True
         except Exception as exc:
             if session_id and session_id in self._cancelled_sessions:

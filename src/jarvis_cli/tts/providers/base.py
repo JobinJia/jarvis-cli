@@ -25,6 +25,11 @@ class TTSProvider(ABC):
     # ffplay decode flags here; None means ffplay auto-detects the container
     # (works for MP3 streams).
     stream_input_args: tuple[str, ...] | None = None
+    # Providers that stream raw PCM set BOTH fields: `stream_pcm` —
+    # (sample_rate, channels) — describes the samples for the in-process
+    # sounddevice sink, while `stream_input_args` stays populated as the
+    # ffplay fallback for when sounddevice isn't installed/usable.
+    stream_pcm: tuple[int, int] | None = None
 
     @abstractmethod
     async def synthesize(
