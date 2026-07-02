@@ -6,6 +6,7 @@ import-light when XTTS isn't actually used (eg. user opts into ElevenLabs).
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -62,6 +63,47 @@ def _prosody_for(emotion: str | None) -> tuple[float, float]:
     if emotion is None:
         return (1.0, 0.0)
     return _EMOTION_PROSODY.get(emotion, (1.0, 0.0))
+
+
+# XTTS's GPT accepts only ~250 chars per generation (its tokenizer's
+# char_limits); anything beyond is silently dropped — the tail of a long
+# announcement just vanishes. coqui's own enable_text_splitting needs spaCy
+# (which we don't ship), so we split at sentence boundaries ourselves and
+# generate piece by piece. 240 leaves headroom under the 250 limit.
+_GPT_CHAR_LIMIT = 240
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;。!?;])\s+")
+
+# Cold speaker amps take ~200 ms to wake from silence and eat whatever plays
+# during that window — synthesized speech starts at full energy within ~1 ms,
+# so the first phoneme was getting swallowed. Lead every utterance with a
+# quarter second of silent PCM: the wake-up burns padding, not speech.
+_PREROLL_SECONDS = 0.25
+
+
+def _split_for_gpt(text: str, limit: int = _GPT_CHAR_LIMIT) -> list[str]:
+    """Split `text` into GPT-sized pieces at sentence boundaries.
+
+    Sentences are packed greedily up to `limit`; a single overlong sentence
+    is hard-split (degraded prosody beats a vanished tail).
+    """
+    pieces: list[str] = []
+    current = ""
+    for sent in _SENTENCE_BOUNDARY.split(text.strip()):
+        if not sent:
+            continue
+        candidate = f"{current} {sent}" if current else sent
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            pieces.append(current)
+        while len(sent) > limit:
+            pieces.append(sent[:limit])
+            sent = sent[limit:]
+        current = sent
+    if current:
+        pieces.append(current)
+    return pieces
 
 
 def _to_int16_pcm(wav: Any) -> Any:
@@ -205,20 +247,26 @@ class XTTSProvider(TTSProvider):
             return out_path
 
         def _run_embedding() -> None:
+            import numpy as np  # type: ignore
             from scipy.io import wavfile  # type: ignore
 
             tts = self._load_model()
             latents = self._load_latents()
-            out = tts.synthesizer.tts_model.inference(
-                text=text,
-                language=language,
-                gpt_cond_latent=latents["gpt_cond_latent"],
-                speaker_embedding=latents["speaker_embedding"],
-                temperature=temperature,
-                speed=speed,
-            )
             sr = int(getattr(tts.synthesizer, "output_sample_rate", _SAMPLE_RATE))
-            wavfile.write(str(out_path), sr, _to_int16_pcm(out["wav"]))
+            # Amp-wake pre-roll + per-piece generation (GPT char limit) —
+            # see _PREROLL_SECONDS / _split_for_gpt for the two whys.
+            parts = [np.zeros(int(sr * _PREROLL_SECONDS), dtype=np.float32)]
+            for piece in _split_for_gpt(text):
+                out = tts.synthesizer.tts_model.inference(
+                    text=piece,
+                    language=language,
+                    gpt_cond_latent=latents["gpt_cond_latent"],
+                    speaker_embedding=latents["speaker_embedding"],
+                    temperature=temperature,
+                    speed=speed,
+                )
+                parts.append(np.asarray(out["wav"], dtype=np.float32))
+            wavfile.write(str(out_path), sr, _to_int16_pcm(np.concatenate(parts)))
 
         await asyncio.to_thread(_run_embedding)
         return out_path
@@ -287,20 +335,31 @@ class XTTSProvider(TTSProvider):
             try:
                 model = self._load_model()
                 gpt_cond_latent, speaker_embedding = self._conditioning_for(lang)
-                for chunk in model.synthesizer.tts_model.inference_stream(
-                    text=text,
-                    language=language,
-                    gpt_cond_latent=gpt_cond_latent,
-                    speaker_embedding=speaker_embedding,
-                    temperature=temperature,
-                    speed=speed,
-                    # Smaller chunks = earlier first sound; see XTTSConfig.
-                    stream_chunk_size=self.cfg.stream_chunk_size,
-                ):
+                # Amp-wake pre-roll (see _PREROLL_SECONDS): silent int16 PCM,
+                # emitted before decoding so the audio device opens and wakes
+                # while the GPT is still working on the first chunk.
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    bytes(2 * int(_SAMPLE_RATE * _PREROLL_SECONDS)),
+                )
+                # Per-piece generation: the GPT silently truncates past its
+                # char limit — see _split_for_gpt.
+                for piece in _split_for_gpt(text):
                     if stop.is_set():
                         break
-                    pcm = _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
-                    loop.call_soon_threadsafe(queue.put_nowait, pcm)
+                    for chunk in model.synthesizer.tts_model.inference_stream(
+                        text=piece,
+                        language=language,
+                        gpt_cond_latent=gpt_cond_latent,
+                        speaker_embedding=speaker_embedding,
+                        temperature=temperature,
+                        speed=speed,
+                        stream_chunk_size=self.cfg.stream_chunk_size,
+                    ):
+                        if stop.is_set():
+                            break
+                        pcm = _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
+                        loop.call_soon_threadsafe(queue.put_nowait, pcm)
             except Exception as exc:  # noqa: BLE001 — surfaced to the consumer
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:

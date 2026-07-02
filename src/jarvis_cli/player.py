@@ -124,15 +124,20 @@ class StreamPlayer:
         except (BrokenPipeError, ConnectionResetError):
             pass
         rc = await self._proc.wait()
+        # Surface ffplay's own complaints even on rc=0 — SDL can fail to open
+        # an audio device, warn on stderr, and still exit clean while playing
+        # to nowhere. "exited with code 1" alone cost us a debugging session
+        # once; silent-success stderr cost us another.
+        detail = ""
+        stderr = getattr(self._proc, "stderr", None)  # test fakes omit it
+        if stderr is not None:
+            err = await stderr.read()
+            if err:
+                detail = f": {err.decode(errors='replace').strip()[:200]}"
         if rc != 0:
-            # Surface ffplay's own complaint (bad option, no audio device, …)
-            # — "exited with code 1" alone cost us a debugging session once.
-            detail = ""
-            if self._proc.stderr is not None:
-                err = await self._proc.stderr.read()
-                if err:
-                    detail = f": {err.decode(errors='replace').strip()[:200]}"
             raise RuntimeError(f"ffplay exited with code {rc}{detail}")
+        if detail:
+            logger.debug("ffplay exited 0 with stderr{}", detail)
 
     async def abort(self) -> None:
         """Kill the process and reap it. Never raises — this is the cleanup

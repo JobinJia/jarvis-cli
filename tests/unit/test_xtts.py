@@ -260,9 +260,12 @@ async def test_xtts_stream_yields_pcm_chunks(tmp_path: Path):
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
         chunks = [c async for c in p.stream("hello", lang="en")]
 
-    assert len(chunks) == 1
+    assert len(chunks) == 2
+    # First item is the amp-wake pre-roll: 0.25s of silent int16 mono PCM,
+    # so the speaker wake-up swallows padding rather than the first phoneme.
+    assert chunks[0] == bytes(2 * int(24000 * 0.25))
     # 3 float samples → 3 int16 → 6 bytes; 1.0 → 32767, -1.0 → -32767.
-    assert chunks[0] == np.array([0, 32767, -32767], dtype=np.int16).tobytes()
+    assert chunks[1] == np.array([0, 32767, -32767], dtype=np.int16).tobytes()
     kwargs = fake_model.synthesizer.tts_model.inference_stream.call_args.kwargs
     assert kwargs["language"] == "en"
     assert kwargs["gpt_cond_latent"] == "g"
@@ -334,3 +337,82 @@ async def test_xtts_stream_propagates_inference_error(tmp_path: Path):
         with pytest.raises(RuntimeError, match="boom"):
             async for _ in p.stream("hello", lang="en"):
                 pass
+
+
+def test_split_for_gpt_passes_short_text_through():
+    from jarvis_cli.tts.providers.xtts import _split_for_gpt
+
+    assert _split_for_gpt("Right away, sir.") == ["Right away, sir."]
+
+
+def test_split_for_gpt_splits_long_text_at_sentence_boundaries():
+    """XTTS's GPT silently truncates past ~250 chars — long announcements
+    lost their tail until we started splitting. Every piece must fit the
+    limit and no text may be dropped."""
+    from jarvis_cli.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
+
+    long = " ".join(
+        f"Sentence number {i} reporting in with a reasonable length, sir."
+        for i in range(12)
+    )
+    assert len(long) > _GPT_CHAR_LIMIT
+    pieces = _split_for_gpt(long)
+    assert len(pieces) >= 2
+    assert all(len(pc) <= _GPT_CHAR_LIMIT for pc in pieces)
+    # Nothing dropped: rejoined pieces reproduce the input (whitespace-joined).
+    assert " ".join(pieces) == long
+
+
+def test_split_for_gpt_hard_splits_single_overlong_sentence():
+    from jarvis_cli.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
+
+    monster = "word " * 100  # no sentence-end punctuation at all
+    pieces = _split_for_gpt(monster)
+    assert all(len(pc) <= _GPT_CHAR_LIMIT for pc in pieces)
+    assert "".join(pieces).replace(" ", "") == monster.strip().replace(" ", "")
+
+
+@pytest.mark.asyncio
+async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
+    """A long text must drive one inference_stream call per split piece —
+    feeding it whole is exactly the silent-truncation bug."""
+    import numpy as np
+
+    cfg = XTTSConfig(
+        model_dir=str(tmp_path / "model"),
+        ref_audio_zh=str(tmp_path / "z.wav"),
+        ref_audio_en=str(tmp_path / "e.wav"),
+        speaker_embedding="",
+        device="cpu",
+    )
+    p = XTTSProvider(cfg)
+
+    class _Chunk:
+        def __init__(self, arr): self._arr = arr
+        def detach(self): return self
+        def cpu(self): return self
+        def numpy(self): return self._arr
+
+    long_text = " ".join(
+        f"Sentence number {i} reporting in with a reasonable length, sir."
+        for i in range(12)
+    )
+    fake_model = MagicMock()
+    fake_model.synthesizer.tts_model.inference_stream.side_effect = lambda **kw: iter(
+        [_Chunk(np.array([0.5], dtype=np.float32))]
+    )
+
+    with patch.object(p, "_load_model", return_value=fake_model), \
+            patch.object(p, "_conditioning_for", return_value=("g", "s")):
+        chunks = [c async for c in p.stream(long_text, lang="en")]
+
+    from jarvis_cli.tts.providers.xtts import _split_for_gpt
+    n_pieces = len(_split_for_gpt(long_text))
+    assert fake_model.synthesizer.tts_model.inference_stream.call_count == n_pieces
+    texts = [
+        c.kwargs["text"]
+        for c in fake_model.synthesizer.tts_model.inference_stream.call_args_list
+    ]
+    assert " ".join(texts) == long_text
+    # pre-roll + one PCM chunk per piece
+    assert len(chunks) == 1 + n_pieces
