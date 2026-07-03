@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -156,13 +157,33 @@ class PCMPlayer:
     Duck-type-compatible with StreamPlayer (feed/close/abort) so the daemon's
     streaming paths can hold either. Versus ffplay: no ~100-150ms process
     spawn + SDL device open per utterance, cancel is an instant buffer
-    discard instead of a SIGKILL, and there's no CLI-flag surface to get
-    wrong (the `-ac`-doesn't-exist class of bug).
+    discard instead of a SIGKILL, no CLI-flag surface to get wrong, and —
+    decisively — PortAudio binds the real default output device, where
+    daemon-spawned SDL was intermittently landing on an inaudible one.
+
+    Jitter-buffered: the PortAudio callback pulls from a Python-side ring
+    buffer and emits clean silence when it runs dry, so a synthesis stall
+    (the GPT prefill between sentence pieces produces nothing for up to a
+    second) sounds like a natural pause instead of a glitch. Playback only
+    starts once `prebuffer_seconds` of audio is queued (or the stream is
+    closed, for utterances shorter than that), building enough lead to ride
+    out those stalls entirely at RTF < 1.
     """
 
-    def __init__(self, stream: Any) -> None:  # a sounddevice.RawOutputStream
-        self._stream = stream
+    #: Audio queued before the device starts consuming. Chosen against the
+    #: measured worst stall: a sentence-piece prefill (~0.5-1s of silence
+    #: from the decoder) versus decode lead accumulating at ~0.2s per chunk.
+    PREBUFFER_SECONDS = 1.0
+
+    def __init__(self, stream: Any, rate: int, channels: int) -> None:
+        self._stream = stream  # a sounddevice.RawOutputStream (callback mode)
+        self._rate = rate
+        self._bytes_per_frame = 2 * channels  # int16
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._started = False
         self._killed = False
+        self._eof = False
 
     @classmethod
     async def spawn(
@@ -172,60 +193,98 @@ class PCMPlayer:
         channels: int,
         on_spawn: Callable[[Cancellable], None] | None = None,
     ) -> "PCMPlayer":
-        """Open + start a PortAudio output stream for headerless int16 PCM.
+        """Open a PortAudio output stream for headerless int16 PCM.
 
         sounddevice is imported lazily so the daemon stays importable without
         the `audio` extra; import errors and device-open failures propagate —
-        `open_pcm_sink` maps them to the ffplay fallback. Open + start run
-        off the event loop because PortAudio device open can block ~tens of
-        ms (still an order of magnitude under an ffplay spawn).
+        `open_pcm_sink` maps them to the ffplay fallback. The stream is NOT
+        started here: it starts once the prebuffer fills (see feed) so the
+        callback never begins by starving.
         """
 
-        def _open() -> Any:
+        def _open() -> "PCMPlayer":
             import sounddevice as sd  # noqa: PLC0415 — optional extra
+
+            player_box: list[PCMPlayer] = []
+
+            def _callback(outdata: Any, frames: int, _time: Any, _status: Any) -> None:
+                player = player_box[0]
+                need = frames * player._bytes_per_frame
+                with player._lock:
+                    take = min(need, len(player._buf))
+                    outdata[:take] = bytes(player._buf[:take])
+                    del player._buf[:take]
+                # Ran dry mid-utterance: pad with silence. No exception, no
+                # click — the deficit is repaid when the decoder catches up.
+                if take < need:
+                    outdata[take:need] = bytes(need - take)
 
             stream = sd.RawOutputStream(
                 samplerate=rate, channels=channels, dtype="int16",
+                callback=_callback,
             )
-            stream.start()
-            return stream
+            player = cls(stream, rate, channels)
+            player_box.append(player)
+            return player
 
-        player = cls(await asyncio.to_thread(_open))
+        player = await asyncio.to_thread(_open)
         if on_spawn is not None:
             on_spawn(player)
         return player
 
+    def _buffered_seconds(self) -> float:
+        with self._lock:
+            return len(self._buf) / (self._rate * self._bytes_per_frame)
+
+    def _start_if_ready(self, *, force: bool = False) -> None:
+        if self._started or self._killed:
+            return
+        if force or self._buffered_seconds() >= self.PREBUFFER_SECONDS:
+            self._started = True
+            self._stream.start()
+
     async def feed(self, chunks: AsyncIterator[bytes]) -> None:
-        """Write one chunk iterator into the device. May be called repeatedly —
-        each call appends to the same stream, so consecutive sentences play
-        gaplessly. Write errors propagate — after an external kill() the
-        aborted stream raises on write, and that propagating error is how the
-        daemon detects a cancel (mirroring ffplay's broken pipe), so it must
-        NOT be swallowed here."""
+        """Append one chunk iterator to the ring buffer. May be called
+        repeatedly — consecutive sentences play gaplessly. After an external
+        kill() this raises, and that propagating error is how the daemon
+        detects a cancel (mirroring ffplay's broken pipe), so it must NOT be
+        swallowed here."""
         async for chunk in chunks:
+            if self._killed:
+                raise RuntimeError("PCM playback cancelled")
             if not chunk:
                 continue
-            # RawOutputStream.write accepts bytes and blocks until the chunk
-            # fits in PortAudio's buffer — that blocking IS our backpressure,
-            # so it runs in a worker thread to keep the event loop live.
-            await asyncio.to_thread(self._stream.write, chunk)
+            with self._lock:
+                self._buf.extend(chunk)
+            await asyncio.to_thread(self._start_if_ready)
 
     async def close(self) -> None:
-        """Drain buffered audio (PortAudio StopStream plays out what's queued)
-        and release the device. After kill() this returns without raising —
-        a cancelled playback is concluded, not failed."""
+        """Play out whatever is buffered, then release the device. After
+        kill() this returns without raising — a cancelled playback is
+        concluded, not failed."""
+        self._eof = True
         if self._killed:
             with contextlib.suppress(Exception):
                 self._stream.close()
             return
-        await asyncio.to_thread(self._stream.stop)
-        self._stream.close()
+        # An utterance shorter than the prebuffer never hit the start
+        # threshold — start now so it still plays.
+        await asyncio.to_thread(self._start_if_ready, force=True)
+        while not self._killed and self._buffered_seconds() > 0:
+            await asyncio.sleep(0.05)
+        # Let the device drain its own last callback buffer before stopping.
+        await asyncio.sleep(0.1)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(self._stream.stop)
+            self._stream.close()
 
     def kill(self) -> None:
         """Synchronous cancel hook (the `Cancellable` contract): discard
         buffered audio immediately. Never raises — the daemon's cancel path
         only guards against ProcessLookupError."""
         self._killed = True
+        with self._lock:
+            self._buf.clear()
         with contextlib.suppress(Exception):
             self._stream.abort()
 

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -375,27 +376,28 @@ class _FakePortAudioError(Exception):
 
 
 class _FakeRawStream:
-    """Mimics sounddevice.RawOutputStream: write blocks (here: records),
-    abort discards, and writing to an aborted/closed stream raises — the
-    behaviour PCMPlayer's cancel detection relies on."""
+    """Mimics callback-mode sounddevice.RawOutputStream: captures the
+    callback so tests can pump it like PortAudio would, records
+    start/stop/abort/close transitions."""
 
-    def __init__(self, *, samplerate, channels, dtype):
+    def __init__(self, *, samplerate, channels, dtype, callback=None):
         self.samplerate = samplerate
         self.channels = channels
         self.dtype = dtype
+        self.callback = callback
         self.started = False
         self.stopped = False
         self.closed = False
         self.aborted = False
-        self.written: list[bytes] = []
 
     def start(self):
         self.started = True
 
-    def write(self, data):
-        if self.aborted or self.closed:
-            raise _FakePortAudioError("stream is stopped")
-        self.written.append(bytes(data))
+    def pump(self, frames: int) -> bytes:
+        """Invoke the callback the way PortAudio would; return what 'played'."""
+        out = bytearray(frames * 2 * self.channels)
+        self.callback(out, frames, None, None)
+        return bytes(out)
 
     def stop(self):
         self.stopped = True
@@ -422,9 +424,10 @@ def _fake_sounddevice(created: list[_FakeRawStream]) -> types.ModuleType:
 
 @pytest.mark.asyncio
 async def test_pcm_player_spawn_opens_stream_with_pcm_spec():
-    """spawn() must open a started int16 RawOutputStream with the provider's
-    rate/channels and hand the player itself to on_spawn (the daemon's
-    cancel-registration hook)."""
+    """spawn() must open (but NOT start) an int16 callback RawOutputStream
+    with the provider's rate/channels and hand the player itself to on_spawn
+    (the daemon's cancel-registration hook). Start is deferred until the
+    prebuffer fills so the callback never begins by starving."""
     from jarvis_cli.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
@@ -435,31 +438,65 @@ async def test_pcm_player_spawn_opens_stream_with_pcm_spec():
     assert len(created) == 1
     stream = created[0]
     assert (stream.samplerate, stream.channels, stream.dtype) == (24000, 1, "int16")
-    assert stream.started is True
+    assert stream.callback is not None
+    assert stream.started is False
     assert seen == [player]
 
 
 @pytest.mark.asyncio
-async def test_pcm_player_feeds_chunks_and_close_drains():
-    """feed() writes each nonempty chunk; close() stops (PortAudio drains
-    buffered audio) then releases the device."""
+async def test_pcm_player_starts_only_after_prebuffer():
+    """Playback must not start until PREBUFFER_SECONDS of audio is queued —
+    the lead is what rides out sentence-piece prefill stalls."""
+    from jarvis_cli.player import PCMPlayer
+
+    created: list[_FakeRawStream] = []
+    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
+        player = await PCMPlayer.spawn(rate=24000, channels=1)
+        prebuffer_bytes = int(24000 * 2 * PCMPlayer.PREBUFFER_SECONDS)
+
+        async def _small():
+            yield b"\x01" * (prebuffer_bytes // 2)
+
+        await player.feed(_small())
+        assert created[0].started is False  # below threshold: keep buffering
+
+        async def _rest():
+            yield b"\x02" * (prebuffer_bytes // 2)
+
+        await player.feed(_rest())
+        assert created[0].started is True  # threshold crossed: rolling
+
+
+@pytest.mark.asyncio
+async def test_pcm_player_close_drains_via_callback_and_pads_underrun():
+    """close() force-starts short utterances, waits for the callback to
+    drain the ring buffer, then stops. A starving callback pads with silence
+    (zeros) — never raises, never clicks."""
     from jarvis_cli.player import PCMPlayer
 
     async def _chunks():
-        yield b"chunk-A"
-        yield b""  # empty chunks are skipped, not written
-        yield b"chunk-B"
+        yield b"\x07\x07"
+        yield b""  # empty chunks are skipped
+        yield b"\x09\x09"
 
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
         player = await PCMPlayer.spawn(rate=24000, channels=1)
         await player.feed(_chunks())
-        await player.close()
+        stream = created[0]
+        assert stream.started is False  # 4 bytes ≪ prebuffer
 
-    stream = created[0]
-    assert stream.written == [b"chunk-A", b"chunk-B"]
+        close_task = asyncio.create_task(player.close())
+        await asyncio.sleep(0.01)  # let close() force-start the stream
+        assert stream.started is True
+        played = stream.pump(2)  # PortAudio pulls 2 frames = 4 bytes
+        await close_task
+
+    assert played == b"\x07\x07\x09\x09"
     assert stream.stopped is True
     assert stream.closed is True
+    # Buffer now empty: further pulls get pure silence, zero-padded.
+    assert stream.pump(3) == b"\x00" * 6
 
 
 @pytest.mark.asyncio
@@ -472,6 +509,11 @@ async def test_pcm_player_kill_aborts_and_close_stays_quiet():
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
         player = await PCMPlayer.spawn(rate=24000, channels=1)
+
+        async def _chunks():
+            yield b"\x05\x05" * 100
+
+        await player.feed(_chunks())
         player.kill()
         player.kill()  # idempotent, still no raise
         await player.close()  # must not raise
@@ -481,13 +523,15 @@ async def test_pcm_player_kill_aborts_and_close_stays_quiet():
     assert stream.closed is True
     # No StopStream drain after a kill — the whole point is instant silence.
     assert stream.stopped is False
+    # Ring buffer discarded: nothing left to play.
+    assert player._buffered_seconds() == 0
 
 
 @pytest.mark.asyncio
 async def test_pcm_player_feed_after_kill_propagates():
-    """After an external kill() the aborted stream raises on write, and feed
-    must let it propagate — that error is how the daemon distinguishes
-    cancel from TTS failure (mirroring ffplay's broken pipe)."""
+    """After an external kill() feed must raise, and the daemon lets that
+    propagate — the error is how it distinguishes cancel from TTS failure
+    (mirroring ffplay's broken pipe)."""
     from jarvis_cli.player import PCMPlayer
 
     async def _chunks():
@@ -497,7 +541,7 @@ async def test_pcm_player_feed_after_kill_propagates():
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
         player = await PCMPlayer.spawn(rate=24000, channels=1)
         player.kill()
-        with pytest.raises(_FakePortAudioError):
+        with pytest.raises(RuntimeError, match="cancelled"):
             await player.feed(_chunks())
 
 
@@ -523,7 +567,7 @@ async def test_open_pcm_sink_prefers_pcm_player():
         sink = await open_pcm_sink(rate=24000, channels=1)
 
     assert isinstance(sink, PCMPlayer)
-    assert created[0].started is True
+    assert created[0].callback is not None
 
 
 @pytest.mark.asyncio
