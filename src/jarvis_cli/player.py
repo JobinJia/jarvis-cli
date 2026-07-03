@@ -222,6 +222,14 @@ class PCMPlayer:
             stream = sd.RawOutputStream(
                 samplerate=rate, channels=channels, dtype="int16",
                 callback=_callback,
+                # The callback is Python, so it contends for the GIL with the
+                # decode thread. At the default ~10ms block it fires ~100x/s
+                # and any GIL stall tears the audio (audible crackle). 200ms
+                # blocks give each callback a deadline no Python stall
+                # plausibly misses, at the cost of latency we already spend
+                # on the prebuffer anyway.
+                blocksize=rate // 5,
+                latency="high",
             )
             player = cls(stream, rate, channels)
             player_box.append(player)

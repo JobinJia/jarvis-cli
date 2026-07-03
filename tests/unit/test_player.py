@@ -380,11 +380,14 @@ class _FakeRawStream:
     callback so tests can pump it like PortAudio would, records
     start/stop/abort/close transitions."""
 
-    def __init__(self, *, samplerate, channels, dtype, callback=None):
+    def __init__(self, *, samplerate, channels, dtype, callback=None,
+                 blocksize=None, latency=None):
         self.samplerate = samplerate
         self.channels = channels
         self.dtype = dtype
         self.callback = callback
+        self.blocksize = blocksize
+        self.latency = latency
         self.started = False
         self.stopped = False
         self.closed = False
