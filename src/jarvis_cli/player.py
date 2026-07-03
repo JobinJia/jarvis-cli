@@ -184,6 +184,11 @@ class PCMPlayer:
         self._started = False
         self._killed = False
         self._eof = False
+        # Diagnostics: how often the callback ran vs ran dry — logged at
+        # close() so stutter reports can be pinned to starvation (or ruled
+        # out) from the daemon log alone.
+        self._callbacks = 0
+        self._underruns = 0
 
     @classmethod
     async def spawn(
@@ -214,9 +219,11 @@ class PCMPlayer:
                     take = min(need, len(player._buf))
                     outdata[:take] = bytes(player._buf[:take])
                     del player._buf[:take]
+                player._callbacks += 1
                 # Ran dry mid-utterance: pad with silence. No exception, no
                 # click — the deficit is repaid when the decoder catches up.
                 if take < need:
+                    player._underruns += 1
                     outdata[take:need] = bytes(need - take)
 
             stream = sd.RawOutputStream(
@@ -285,6 +292,11 @@ class PCMPlayer:
         with contextlib.suppress(Exception):
             await asyncio.to_thread(self._stream.stop)
             self._stream.close()
+        # The final callback legitimately runs short (end of utterance), so
+        # one underrun is expected; more means playback starved mid-stream.
+        logger.debug(
+            "pcm sink: {} callbacks, {} underruns", self._callbacks, self._underruns,
+        )
 
     def kill(self) -> None:
         """Synchronous cancel hook (the `Cancellable` contract): discard

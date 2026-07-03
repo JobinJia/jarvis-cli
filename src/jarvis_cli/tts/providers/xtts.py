@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -344,9 +345,22 @@ class XTTSProvider(TTSProvider):
                 )
                 # Per-piece generation: the GPT silently truncates past its
                 # char limit — see _split_for_gpt.
-                for piece in _split_for_gpt(text):
+                # Piece-buffered delivery: measured IN-DAEMON decode runs at
+                # RTF 1.1–1.7 (slower than realtime; the 0.76 standalone
+                # benchmark does not hold under daemon conditions), so
+                # chunk-by-chunk streaming inevitably starves any real-time
+                # sink — heard as word-by-word, half-word playback. Instead
+                # each piece is decoded COMPLETELY and enqueued as one blob:
+                # within a piece playback is gapless by construction, and the
+                # next piece decodes while the current one plays. The cost is
+                # a possible short pause at piece boundaries — a natural
+                # sentence break, not a mid-word chop.
+                pieces = _split_for_gpt(text)
+                for i, piece in enumerate(pieces):
                     if stop.is_set():
                         break
+                    t0 = time.perf_counter()
+                    blob = bytearray()
                     for chunk in model.synthesizer.tts_model.inference_stream(
                         text=piece,
                         language=language,
@@ -358,8 +372,17 @@ class XTTSProvider(TTSProvider):
                     ):
                         if stop.is_set():
                             break
-                        pcm = _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
-                        loop.call_soon_threadsafe(queue.put_nowait, pcm)
+                        blob += _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
+                    if blob and not stop.is_set():
+                        loop.call_soon_threadsafe(queue.put_nowait, bytes(blob))
+                    wall = time.perf_counter() - t0
+                    audio_s = len(blob) / 2 / _SAMPLE_RATE
+                    logger.debug(
+                        "xtts stream piece {}/{}: {:.1f}s audio in {:.1f}s wall"
+                        " (rtf {:.2f})",
+                        i + 1, len(pieces), audio_s, wall,
+                        wall / audio_s if audio_s else float("inf"),
+                    )
             except Exception as exc:  # noqa: BLE001 — surfaced to the consumer
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
