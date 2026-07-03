@@ -50,12 +50,16 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
   - **two-stage / 分层检索**:先粗筛候选域再精排,top-k 控制 context。我们 top_k=5 已轻量,但可在 MCP registry 变大时引入。
   - **reasoning-aware reranking**(MemReranker):候选排序时带入意图推理而非纯余弦。
 
-### 3.2 Streaming 管线 ✅ 已落地(2026-07)
+### 3.2 Streaming 管线 ✅ 已落地(2026-07,经实听迭代定型)
 
-- **现状**:LLM token 流 → `chunker.py` 句级分块 → XTTS `inference_stream` 逐句 raw PCM → **单 ffplay 会话**(`StreamPlayer`)无缝播放。config 开关 `behavior.streaming_pipeline`(默认已开)。
-- **落地中的关键修复**:ffplay 无 `-ac` 选项(单声道须 `-ch_layout mono`),此前流式一直在静默回退到文件合成;修复后流式首次真正生效。ffplay stderr 现随异常上抛,同类问题日志可见。
-- **延迟已做**:ffplay `-probesize 32 -analyzeduration 0 -fflags nobuffer`、XTTS 模型/latents/天气 daemon 启动预热、Ollama `keep_alive=30m` 常驻。`stream_chunk_size` 实测(2026-07-03,MPS):10 两头皆输(首块 4.16s / RTF 2.23 → 长句卡顿),20 最优(首块 0.58s / RTF 0.76),保持 20。
-- **剩余**(见 §3.4):措辞预取流水线(积压场景)、chunker 首块提前切分、sounddevice 进程内播放。
+- **最终架构**:LLM token 流 → `chunker.py` 句级分块(首块可子句切)→ XTTS **按段整块解码**(`_split_for_gpt` ≤240 字符/段,段内 `inference_stream` 攒完再交付)→ **PCMPlayer**(sounddevice/PortAudio 回调模式,200ms 块,1s 预缓冲,断流补静音)。`tts.pcm_playback = true`。
+- **被数据否决的方案**(勿凭直觉回退,见 memory `project_xtts_audio_architecture`):
+  - chunk 级实时流:daemon 内解码 RTF 随负载在 0.6–1.7 波动,RTF>1 时必然饿死(逐词半词)
+  - daemon 起的 ffplay/SDL:重启后间歇绑定到不可闻输出设备(正常退出但零声音)
+  - 10ms 回调块:Python 回调抢 GIL,撕裂爆音
+- **同期修复**:ffplay `-ac`→`-ch_layout mono`(流式此前从未真正工作)、GPT 250 字符静默截断(自切分)、功放唤醒吞头(0.25s 静音前导)、`stream_chunk_size=10` 两头皆输(保持 20)。
+- **诊断探针长期保留**:每段 RTF 日志 + 播放欠载计数(DEBUG)。
+- **剩余调优**:段大小均衡(~120 字符,超长句按子句切)以缩短段间停顿。
 
 ### 3.3 情感化语音 ✅ 已落地(2026-07)
 
