@@ -18,11 +18,17 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 
-# Sentence-ending punctuation: Latin (. ! ? ;) including em-dash, plus CJK
-# full-width equivalents.  The regex matches the punctuation followed by
-# optional closing quotes/brackets/whitespace, so "he said." and "done!"
-# both trigger a split.
-_SENTENCE_END = re.compile(r'[.!?;—。！？；]["\')）\]】]?\s*$')
+# Sentence-ending punctuation: Latin (. ! ? ;) plus CJK full-width
+# equivalents.  The regex matches the punctuation followed by optional
+# closing quotes/brackets/whitespace, so "he said." and "done!" both
+# trigger a split.
+#
+# The em-dash is deliberately NOT here: the Jarvis phrasing style leans on
+# "clause — clause?" in nearly every line, and splitting at the dash hands
+# XTTS a dangling half-sentence ("Sir, he wishes to push to main —") that it
+# renders with a long, drawn-out delivery — the user heard "Sir" stretched
+# for seconds.  Dash-joined clauses must stay one synthesis unit.
+_SENTENCE_END = re.compile(r'[.!?;。！？；]["\')）\]】]?\s*$')
 
 # Fragments shorter than this are held back — catches abbreviations like
 # "Mr." and numbered lists ("1.") that end in a period but aren't sentence

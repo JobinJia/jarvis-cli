@@ -55,6 +55,18 @@ async def test_cjk_clause_delimiters_do_not_split(delim: str):
 
 
 @pytest.mark.asyncio
+async def test_em_dash_does_not_end_a_sentence():
+    """The house style is "clause — clause?" in nearly every line; splitting
+    at the dash hands XTTS a dangling half-sentence that it draws out
+    painfully ("Sir …" stretched for seconds). The dash-joined line must
+    reach TTS as ONE unit, yielding only at the real terminator."""
+    chunks = await _collect([
+        "Sir, he wishes to push to main ", "—", " shall I allow", "?",
+    ])
+    assert chunks == ["Sir, he wishes to push to main — shall I allow?"]
+
+
+@pytest.mark.asyncio
 async def test_multiple_sentences_yield_separately():
     chunks = await _collect([
         "The tests have all passed", ".", " The branch is ready for review", ".",
