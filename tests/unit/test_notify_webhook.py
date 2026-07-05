@@ -256,3 +256,27 @@ async def test_default_format_stays_generic():
         await webhook.notify(cfg, _event(), "hi")
 
     assert "text" in captured and "title" not in captured
+
+
+@pytest.mark.asyncio
+async def test_ntfy_format_posts_text_body_with_headers():
+    """format="ntfy" sends the spoken line as the raw body with Title/
+    Priority headers — one app (ntfy) covers notify-only pushes here and
+    actionable ones in notify/remote.py."""
+    cfg = WebhookConfig(
+        enabled=True, url="https://ntfy.sh/some-topic", format="ntfy",
+    )
+    with respx.mock(base_url="https://ntfy.sh") as router:
+        route = router.post("/some-topic").respond(200)
+        ok = await webhook.notify(
+            cfg,
+            _event(notification_type="tool_failure", cwd="/repo/jarvis-cli"),
+            "Sir, the tests have failed.",
+        )
+
+    assert ok is True
+    request = route.calls[0].request
+    assert request.content.decode() == "Sir, the tests have failed."
+    assert request.headers["Title"] == "Jarvis - jarvis-cli"
+    assert request.headers["Priority"] == "high"  # attention type
+    assert request.headers["Tags"] == "robot"

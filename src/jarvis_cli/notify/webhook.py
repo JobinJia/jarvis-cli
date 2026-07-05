@@ -155,16 +155,40 @@ async def notify(cfg: WebhookConfig, event: Event, text: str) -> bool:
         )
         return False
 
+    headers = _resolve_headers(cfg)
     # Unknown format strings fall through to generic rather than erroring —
     # a config typo must not silence remote pushes entirely.
-    if cfg.format == "bark":
-        payload: dict = _build_bark_payload(event, text)
+    if cfg.format == "ntfy":
+        # ntfy wants the message as the raw body and metadata as headers —
+        # this lets ONE app cover both stacks: buttonless notify-only pushes
+        # here, actionable decision pushes via notify/remote.py, same topic
+        # or separate ones as the user prefers. Title must stay latin-1-safe
+        # (httpx header constraint), so non-ASCII project names fall back.
+        project = project_name(event)
+        title = f"Jarvis - {project}" if project.isascii() else "Jarvis"
+        headers.update({
+            "Title": title,
+            "Priority": (
+                "high"
+                if event.notification_type in ATTENTION_TYPES
+                else "default"
+            ),
+            "Tags": "robot",
+        })
+        body: bytes | None = text.encode("utf-8")
+        payload: dict | None = None
+    elif cfg.format == "bark":
+        body = None
+        payload = _build_bark_payload(event, text)
     else:
+        body = None
         payload = _build_payload(event, text)
-    headers = _resolve_headers(cfg)
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout_seconds) as client:
-            r = await client.post(cfg.url, json=payload, headers=headers)
+            if body is not None:
+                r = await client.post(cfg.url, content=body, headers=headers)
+            else:
+                r = await client.post(cfg.url, json=payload, headers=headers)
             r.raise_for_status()
     except Exception as exc:  # noqa: BLE001 — fail-soft: never break audio
         logger.warning("webhook notify failed ({}): {}", type(exc).__name__, exc)
