@@ -376,6 +376,12 @@ class WebhookConfig:
     """
     enabled: bool = False
     url: str = ""
+    # Payload shape. "generic" (default) keeps today's flat JSON object —
+    # back-compat for Slack/ntfy/anything. "bark" emits Bark's native
+    # title/body/group/level fields so iOS (and the mirrored Apple Watch
+    # notification) renders a proper title + per-project grouping instead of
+    # a raw JSON blob. See notify/webhook.py for both shapes.
+    format: str = "generic"
     # Static headers sent on every request (e.g. ntfy's `Title`, a content
     # type, etc). Auth tokens belong in `auth_env`, not here.
     headers: dict[str, str] = field(default_factory=dict)
@@ -387,6 +393,30 @@ class WebhookConfig:
     # Optional allowlist of notification types to push. Empty = push all that
     # reach the webhook (which are already filtered by behavior.events first).
     events: list[str] = field(default_factory=list)
+    timeout_seconds: float = 5.0
+
+
+@dataclass
+class RemoteConfig:
+    """ntfy-based actionable approvals: outbound pushes carry Approve/Deny
+    buttons whose taps POST a decision to a second secret topic that the
+    daemon subscribes to — so the phone/watch never needs inbound network
+    access to the Mac. Opt-in (``enabled=false``). Both topic names act as
+    bearer secrets: anyone who knows them can read pushes / inject decisions,
+    so use long random strings (or self-host ntfy). See notify/remote.py.
+    """
+    enabled: bool = False
+    ntfy_base: str = "https://ntfy.sh"
+    topic_notify: str = ""    # secret topic the phone subscribes to
+    topic_reply: str = ""     # secret topic action buttons publish decisions to
+    # Which events get actionable pushes (need a decision from the user).
+    events: list[str] = field(default_factory=lambda: [
+        "permission_prompt", "ask_user_question", "elicitation_dialog",
+    ])
+    # Optional shell command run on every decision, with JARVIS_SESSION_ID /
+    # JARVIS_DECISION / JARVIS_CWD in the env — the pluggable bridge toward
+    # actually unblocking a session (e.g. wiring send-input.sh). Empty = skip.
+    on_decision_cmd: str = ""
     timeout_seconds: float = 5.0
 
 
@@ -406,6 +436,7 @@ class Config:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     webhook: WebhookConfig = field(default_factory=WebhookConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
 
 
 def expanduser(p: str) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import tempfile
 import time
@@ -14,6 +15,7 @@ from loguru import logger
 
 from ..briefing import WeatherCache, compose_briefing, detect_city
 from ..config import DEFAULT_CONFIG_PATH, Config, load_config
+from ..notify import remote as remote_notify
 from ..notify import webhook as webhook_notify
 from ..phrase.language import detect_for
 from ..phrase.providers.anthropic import AnthropicProvider
@@ -513,6 +515,13 @@ class Daemon:
             # (notify.webhook itself is fail-soft and never raises).
             if self.cfg.webhook.enabled:
                 self._fire_webhook(event, text)
+            # Actionable remote push (ntfy Approve/Deny buttons) rides the
+            # same detached-task pattern: concurrent with playback, fail-soft.
+            if (
+                self.cfg.remote.enabled
+                and event.notification_type in self.cfg.remote.events
+            ):
+                self._fire_remote(event, text)
             # Phrasing/briefing above can take seconds (LLM round-trip). If the
             # user already acted on this session in that window, the line is
             # stale — drop it before any play proc starts rather than speak a
@@ -710,6 +719,12 @@ class Daemon:
             )
             if full_text and self.cfg.webhook.enabled:
                 self._fire_webhook(event, full_text)
+            if (
+                full_text
+                and self.cfg.remote.enabled
+                and event.notification_type in self.cfg.remote.events
+            ):
+                self._fire_remote(event, full_text)
         except Exception as exc:
             if sid and sid in self._cancelled_sessions:
                 logger.debug("streaming playback cancelled for session {}", sid)
@@ -735,6 +750,69 @@ class Daemon:
         )
         self._webhook_tasks.add(task)
         task.add_done_callback(self._webhook_tasks.discard)
+
+    def _fire_remote(self, event: Event, text: str) -> None:
+        """Schedule the ntfy actionable push as a detached task, sharing the
+        webhook task-tracking set (same lifecycle need: keep a strong ref so
+        the task isn't GC'd mid-flight). push_actionable is fail-soft."""
+        task = asyncio.ensure_future(
+            remote_notify.push_actionable(self.cfg.remote, event, text)
+        )
+        self._webhook_tasks.add(task)
+        task.add_done_callback(self._webhook_tasks.discard)
+
+    async def _remote_listener(self) -> None:
+        """Lifetime task: subscribe to the ntfy reply topic and route each
+        Approve/Deny decision into _on_remote_decision. listen_replies
+        reconnects forever and only exits on cancellation (daemon shutdown)."""
+        await remote_notify.listen_replies(
+            self.cfg.remote, self._on_remote_decision,
+        )
+
+    async def _on_remote_decision(self, decision: str, sid: str) -> None:
+        """A decision arrived from the phone/watch: acknowledge audibly and
+        (optionally) hand it to the configured bridge command. Fail-soft —
+        a broken bridge must never take the listener down."""
+        logger.info("remote decision: {} sid={}", decision, sid)
+        text = (
+            "Sir, remote approval received."
+            if decision == "approve"
+            else "Understood, sir — request denied remotely."
+        )
+        # Pre-baked spoken ack (same pattern as _announce_phrase_fallback):
+        # no LLM round-trip, session_id=None so a pending cancel for the
+        # decided session can't silence the acknowledgement itself.
+        ack = Event(
+            notification_type="idle_prompt",
+            tool_name=None, tool_input={},
+            text=text, lang="en",
+        )
+        await self.queue.put_or_drop(ack)
+        cmd = self.cfg.remote.on_decision_cmd
+        if not cmd:
+            return
+        env = dict(os.environ)
+        env.update({
+            "JARVIS_SESSION_ID": sid,
+            "JARVIS_DECISION": decision,
+            # Reserved for a future push→decision correlation that carries
+            # the project dir; bridges can rely on the var existing today.
+            "JARVIS_CWD": "",
+        })
+        try:
+            # Fire-and-forget: we never await completion or read output —
+            # the bridge owns its own logging/failure story.
+            await asyncio.create_subprocess_shell(
+                cmd,
+                env=env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except Exception as exc:  # noqa: BLE001 — never raise into listener
+            logger.warning(
+                "remote: on_decision_cmd spawn failed ({}): {}",
+                type(exc).__name__, exc,
+            )
 
     async def _spawn_stream_sink(
         self,
@@ -862,15 +940,18 @@ class Daemon:
 
     async def run(self) -> None:
         await self.health.start()
-        tasks = [
-            asyncio.create_task(coro)
-            for coro in (
-                self._worker(),
-                self._prewarm_skills(),
-                self._prewarm_tts(),
-                self._prewarm_briefing(),
-            )
+        coros = [
+            self._worker(),
+            self._prewarm_skills(),
+            self._prewarm_tts(),
+            self._prewarm_briefing(),
         ]
+        # Reply-topic subscription only makes sense with a topic to listen
+        # on; a half-configured [remote] simply gets no listener (pushes
+        # without buttons still work via topic_notify alone).
+        if self.cfg.remote.enabled and self.cfg.remote.topic_reply:
+            coros.append(self._remote_listener())
+        tasks = [asyncio.create_task(coro) for coro in coros]
         try:
             await serve_unix_socket(
                 Path(self.cfg.paths.socket),

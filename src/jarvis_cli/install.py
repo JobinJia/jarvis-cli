@@ -642,6 +642,34 @@ def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = N
         weather_ttl_seconds = 600
         min_interval_seconds = 0
         weather_timeout_seconds = 3.0
+
+        # --- Optional phone/watch notifications (opt-in; off by default) ---
+        # Push the spoken line to a webhook (Bark / ntfy / Slack / generic).
+        # format = "bark" emits Bark-native title/body/group/level so iOS and
+        # the mirrored Apple Watch push render cleanly; "generic" keeps the
+        # flat JSON. See notify/webhook.py.
+        # [webhook]
+        # enabled = true
+        # url = "https://api.day.app/<device-key>"
+        # format = "bark"
+        # events = []                # empty = push every spoken event
+        # timeout_seconds = 5.0
+
+        # ntfy actionable approvals: pushes carry Approve/Deny buttons that
+        # POST a decision to `topic_reply`, which the daemon subscribes to —
+        # no inbound access to the Mac needed. Topic names are bearer
+        # secrets: use long random strings (or self-host ntfy). See
+        # notify/remote.py.
+        # [remote]
+        # enabled = true
+        # ntfy_base = "https://ntfy.sh"
+        # topic_notify = "<long-random-secret-1>"
+        # topic_reply = "<long-random-secret-2>"
+        # events = ["permission_prompt", "ask_user_question", "elicitation_dialog"]
+        # # Shell bridge run per decision with JARVIS_SESSION_ID /
+        # # JARVIS_DECISION / JARVIS_CWD in the env. Empty = just speak an ack.
+        # on_decision_cmd = ""
+        # timeout_seconds = 5.0
         """)
 
 

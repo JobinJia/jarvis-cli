@@ -169,3 +169,90 @@ async def test_missing_received_at_serialized_as_null():
         await webhook.notify(cfg, _event(received_at=0.0), "hi")
 
     assert captured["received_at"] is None
+
+
+# --- Bark-native format (format = "bark") ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bark_format_builds_native_payload():
+    cfg = WebhookConfig(
+        enabled=True, url="https://api.day.app/devkey", format="bark",
+    )
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200)
+
+    with respx.mock(base_url="https://api.day.app") as router:
+        router.post("/devkey").mock(side_effect=_handler)
+        ok = await webhook.notify(
+            cfg,
+            _event(cwd="/Users/me/myself/jarvis-cli"),
+            "Sir, the build is done.",
+        )
+
+    assert ok is True
+    assert captured == {
+        "title": "Jarvis · jarvis-cli",
+        "body": "Sir, the build is done.",
+        "group": "jarvis-cli",
+        "level": "active",  # idle_prompt is not attention-needed
+    }
+
+
+@pytest.mark.asyncio
+async def test_bark_attention_types_are_time_sensitive():
+    cfg = WebhookConfig(
+        enabled=True, url="https://api.day.app/devkey", format="bark",
+    )
+    levels: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        levels.append(json.loads(request.content)["level"])
+        return httpx.Response(200)
+
+    with respx.mock(base_url="https://api.day.app") as router:
+        router.post("/devkey").mock(side_effect=_handler)
+        for ntype in ("permission_prompt", "tool_failure", "rate_limited"):
+            await webhook.notify(cfg, _event(notification_type=ntype), "hi")
+
+    assert levels == ["timeSensitive"] * 3
+
+
+@pytest.mark.asyncio
+async def test_bark_missing_cwd_falls_back_to_jarvis():
+    cfg = WebhookConfig(
+        enabled=True, url="https://api.day.app/devkey", format="bark",
+    )
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200)
+
+    with respx.mock(base_url="https://api.day.app") as router:
+        router.post("/devkey").mock(side_effect=_handler)
+        await webhook.notify(cfg, _event(cwd=None), "hi")
+
+    assert captured["title"] == "Jarvis · jarvis"
+    assert captured["group"] == "jarvis"
+
+
+@pytest.mark.asyncio
+async def test_default_format_stays_generic():
+    """Back-compat: an untouched WebhookConfig must keep the flat payload."""
+    cfg = WebhookConfig(enabled=True, url="https://example.com/hook")
+    assert cfg.format == "generic"
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200)
+
+    with respx.mock(base_url="https://example.com") as router:
+        router.post("/hook").mock(side_effect=_handler)
+        await webhook.notify(cfg, _event(), "hi")
+
+    assert "text" in captured and "title" not in captured

@@ -4,7 +4,7 @@ When enabled, the daemon POSTs the spoken Jarvis line plus a little event
 metadata to a configured URL so a phone/IM (Bark, ntfy, Slack/Discord webhook,
 or any generic JSON endpoint) can surface it while the user is away.
 
-Payload shape (``application/json``)::
+Payload shape (``application/json``, ``format = "generic"``)::
 
     {
       "text": "Sir, the build has completed.",   # the spoken Jarvis line
@@ -31,13 +31,26 @@ target be customized purely by URL + headers, so the same notifier targets:
              exact key, otherwise the raw JSON is still logged on Discord's
              side. (Slack-compatible by appending `/slack` to the URL.)
 
+Bark native mode (``format = "bark"``): the generic POST *delivers* to Bark
+but renders as a JSON blob. With ``format = "bark"`` we instead emit Bark's
+own fields — ``title`` ("Jarvis · <project>"), ``body`` (the spoken line),
+``group`` (per-project notification stacking) and ``level`` — so the iOS push
+(and its automatic Apple Watch mirror) reads like a real notification. The
+URL embeds the device key (https://api.day.app/<key>). ``level`` maps from
+the notification type: attention-needed events (permission prompts,
+questions, failures, rate limits, overflow) are ``timeSensitive`` so they
+punch through iOS Focus modes; everything else is ``active``.
+
 Privacy note: by the time the daemon calls this, ``text`` is the final spoken
 line. For LLM-phrased events that line was produced from an already
 extract-+-redacted summary (see phrase/router.py, gated by
 ``behavior.privacy.cloud_redaction``), so no raw tool input leaks through the
 phrasing. The ``cwd`` and ``tool_name`` we attach here are raw, unredacted
 metadata — they never pass through the phrase redactor — so only enable the
-webhook against an endpoint you trust with your project paths.
+webhook against an endpoint you trust with your project paths. Bark mode
+exposes strictly less: only the project *basename* (title/group), never the
+full path or tool name — but Bark pushes route through Apple's APNs plus the
+Bark server unless you self-host, so the same trust call applies.
 
 Fail-soft contract: every error (timeout, connection refused, non-2xx, bad
 config) is caught and logged. This function NEVER raises and NEVER blocks the
@@ -46,12 +59,35 @@ audio path — the daemon fires it as a detached task.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import httpx
 from loguru import logger
 
 from ..config import WebhookConfig
 from ..types import Event
+
+# Event types where the user's attention is actually needed (a session is
+# blocked or something went wrong). In Bark terms these are "timeSensitive":
+# iOS lets them punch through Focus modes; the rest ride as ordinary "active"
+# pushes. Kept module-level so notify/remote.py's priority mapping and tests
+# can share the same judgement call.
+ATTENTION_TYPES: frozenset[str] = frozenset({
+    "permission_prompt",
+    "ask_user_question",
+    "elicitation_dialog",
+    "tool_failure",
+    "api_error",
+    "rate_limited",
+    "max_turns_reached",
+    "context_overflow",
+})
+
+
+def project_name(event: Event) -> str:
+    """The project's directory basename, or "jarvis" when the event carries
+    no cwd (pre-baked `say --text` lines, daemon self-announcements)."""
+    return Path(event.cwd).name if event.cwd else "jarvis"
 
 
 def _resolve_headers(cfg: WebhookConfig) -> dict[str, str]:
@@ -84,6 +120,24 @@ def _build_payload(event: Event, text: str) -> dict[str, object | None]:
     }
 
 
+def _build_bark_payload(event: Event, text: str) -> dict[str, object]:
+    """Bark-native shape: title/body render as a real iOS notification,
+    `group` stacks pushes per project in Notification Center, and `level`
+    decides whether the push may break through a Focus mode."""
+    project = project_name(event)
+    level = (
+        "timeSensitive"
+        if event.notification_type in ATTENTION_TYPES
+        else "active"
+    )
+    return {
+        "title": f"Jarvis · {project}",
+        "body": text,
+        "group": project,
+        "level": level,
+    }
+
+
 async def notify(cfg: WebhookConfig, event: Event, text: str) -> bool:
     """POST the spoken ``text`` + ``event`` metadata to the configured webhook.
 
@@ -101,7 +155,12 @@ async def notify(cfg: WebhookConfig, event: Event, text: str) -> bool:
         )
         return False
 
-    payload = _build_payload(event, text)
+    # Unknown format strings fall through to generic rather than erroring —
+    # a config typo must not silence remote pushes entirely.
+    if cfg.format == "bark":
+        payload: dict = _build_bark_payload(event, text)
+    else:
+        payload = _build_payload(event, text)
     headers = _resolve_headers(cfg)
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout_seconds) as client:
