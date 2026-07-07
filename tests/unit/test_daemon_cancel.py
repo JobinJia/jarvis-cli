@@ -194,6 +194,78 @@ async def test_worker_skips_stream_when_cancelled_during_phrasing():
 
 
 @pytest.mark.asyncio
+async def test_cancel_session_spares_exempt_in_flight_event():
+    """tool_failure is cancel-exempt by default: with a slow TTS the failure
+    notice often starts playing only after the session's next tool call, whose
+    PostToolUse cancel would otherwise cut it off one word in. The in-flight
+    proc must survive the cancel."""
+    d = Daemon(Config())
+    proc = MagicMock()
+    proc.kill = MagicMock()
+    d._current_proc = proc
+    d._current_session_id = "abc"
+    d._current_cancellable = False  # set by _register for exempt events
+
+    await d.cancel_session("abc")
+
+    proc.kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_keeps_exempt_events_queued():
+    """A queued failure notice stays informative after the session moves on —
+    cancel must drop the session's other events but leave exempt ones."""
+    d = Daemon(Config())
+    failure = Event(
+        notification_type="tool_failure",
+        tool_name="Bash", cwd="/abc", session_id="abc",
+    )
+    await d.queue.put_or_drop(_ev("abc", tool="T1"))
+    await d.queue.put_or_drop(failure)
+
+    await d.cancel_session("abc")
+
+    survivors = []
+    while d.queue.size:
+        survivors.append((await d.queue.get()).notification_type)
+    assert survivors == ["tool_failure"]
+
+
+@pytest.mark.asyncio
+async def test_worker_plays_exempt_event_despite_pending_cancel():
+    """The mid-synth cancel that truncates a permission_prompt (see
+    test_worker_skips_play_when_cancelled_during_synth) must NOT suppress a
+    cancel-exempt tool_failure — the notice still plays."""
+    d = Daemon(Config())
+    d.tts.primary = MagicMock()
+    d.tts.primary.supports_streaming = False  # forces the synth+play fallback
+
+    ev = Event(
+        notification_type="tool_failure",
+        tool_name="Bash", session_id="abc", text="the build failed", lang="en",
+    )
+
+    async def _synth(text, lang, out_path, voice_id=None, emotion=None):
+        out_path.write_bytes(b"")
+        d._cancelled_sessions.add("abc")  # session moves on mid-synthesis
+
+    d.tts.synthesize = _synth
+
+    from unittest.mock import patch
+
+    play_calls = 0
+
+    async def _fake_play(audio, *, on_spawn=None):
+        nonlocal play_calls
+        play_calls += 1
+
+    with patch("jarvis_cli.daemon.main.play", side_effect=_fake_play):
+        await d._process_one(ev)
+
+    assert play_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_cancel_session_handles_process_lookup_error():
     d = Daemon(Config())
 

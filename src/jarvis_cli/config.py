@@ -294,6 +294,15 @@ class BehaviorConfig:
     # When True (default), the hook sends a cancel signal on UserPromptSubmit /
     # PostToolUse so the daemon stops any in-flight audio for that session.
     cancel_on_user_action: bool = True
+    # Event types immune to that cancel: they keep playing (and stay queued)
+    # when the session moves on. A permission/idle prompt goes stale the
+    # moment the user acts, but a failure notice stays true — and with a
+    # slower-than-realtime local TTS the announcement often starts only
+    # after the session's next tool call, whose PostToolUse cancel would
+    # otherwise cut it off one word in ("Sir, —").
+    cancel_exempt_events: list[str] = field(
+        default_factory=lambda: ["tool_failure"]
+    )
     # Drop LLM-phrased events older than this (seconds) at dequeue time — a
     # backlog burst otherwise speaks stale notifications the user already
     # acted on. 0 disables. Pre-baked text (`say --text`) and session_start

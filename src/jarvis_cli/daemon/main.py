@@ -120,6 +120,10 @@ class Daemon:
         # PCMPlayer — anything cancel_session can kill() (see Cancellable).
         self._current_proc: Cancellable | None = None
         self._current_session_id: str | None = None
+        # False while the in-flight event's type is cancel-exempt (see
+        # behavior.cancel_exempt_events) — cancel_session then leaves the
+        # playback alone.
+        self._current_cancellable: bool = True
         self._cancelled_sessions: set[str] = set()
         # Phrase prefetch: while event N plays, the worker phrases the event
         # at the queue head so N+1 skips its LLM round-trip. Keyed by event
@@ -214,14 +218,25 @@ class Daemon:
         await self.queue.put_or_drop(alert)
 
     async def cancel_session(self, session_id: str) -> None:
-        """Cancel any in-flight audio for `session_id` and drop its queued events."""
+        """Cancel any in-flight audio for `session_id` and drop its queued
+        events. Types in behavior.cancel_exempt_events (failure notices by
+        default) are immune throughout — they stay queued, and an in-flight
+        one plays out; the workers' own cancelled-checks skip them too."""
+        exempt = self.cfg.behavior.cancel_exempt_events
         self._cancelled_sessions.add(session_id)
         # No need to touch `_prefetched` here: dropping the queued event means
         # the worker's identity check never matches it, so the cached phrase
         # is discarded on the next dequeue.
-        self.queue.drop_matching(lambda e: e.session_id == session_id)
+        self.queue.drop_matching(
+            lambda e: e.session_id == session_id
+            and e.notification_type not in exempt
+        )
         proc = self._current_proc
-        if proc is not None and self._current_session_id == session_id:
+        if (
+            proc is not None
+            and self._current_session_id == session_id
+            and self._current_cancellable
+        ):
             try:
                 proc.kill()
             except ProcessLookupError:
@@ -451,6 +466,12 @@ class Daemon:
     async def _process_one(self, event: Event) -> None:
         sid = event.session_id
         started = time.monotonic()
+        # Cancel-exempt events ignore every cancelled-check below: a cancel
+        # that lands while one is phrasing/synthesizing/playing must not
+        # silence it (behavior.cancel_exempt_events).
+        cancellable = (
+            event.notification_type not in self.cfg.behavior.cancel_exempt_events
+        )
         # Capture-and-reset the worker's prefetch flag so a direct call
         # (tests, future callers) never inherits a stale True.
         prefetched = self._dispatch_prefetched
@@ -462,6 +483,7 @@ class Daemon:
         def _register(proc: Cancellable) -> None:
             self._current_proc = proc
             self._current_session_id = sid
+            self._current_cancellable = cancellable
 
         # Derive the emotion for this event once; it flows into both the
         # phrase prompt (shaping the LLM's written text) and the TTS
@@ -527,7 +549,7 @@ class Daemon:
             # stale — drop it before any play proc starts rather than speak a
             # step too late. No proc is registered yet, so the cancel that just
             # landed had nothing to kill; this guard is what honours it.
-            if sid and sid in self._cancelled_sessions:
+            if cancellable and sid and sid in self._cancelled_sessions:
                 logger.debug("DROP cancelled-before-play sid={}", sid)
                 return
             logger.debug(
@@ -537,13 +559,13 @@ class Daemon:
             if await self._try_stream(
                 text, lang, event.voice_id,
                 on_spawn=_register, session_id=sid,
-                emotion=emotion,
+                emotion=emotion, cancellable=cancellable,
             ):
                 _log_timing()
                 return
             # Skip synth fallback if a cancel arrived between stream attempt
             # and now — otherwise the same line gets re-synthesized + replayed.
-            if sid and sid in self._cancelled_sessions:
+            if cancellable and sid and sid in self._cancelled_sessions:
                 return
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 out_path = Path(tmp.name)
@@ -555,7 +577,7 @@ class Daemon:
             # (CosyVoice ~seconds) and registers no play proc, so a cancel that
             # lands mid-synth kills nothing. Re-check before playing so the
             # finished file is discarded instead of surfacing as stale audio.
-            if sid and sid in self._cancelled_sessions:
+            if cancellable and sid and sid in self._cancelled_sessions:
                 logger.debug("DROP cancelled-after-synth sid={}", sid)
                 try:
                     out_path.unlink()
@@ -571,13 +593,14 @@ class Daemon:
                     pass
             _log_timing()
         except Exception as exc:
-            if sid and sid in self._cancelled_sessions:
+            if cancellable and sid and sid in self._cancelled_sessions:
                 logger.debug("playback cancelled for session {}", sid)
             else:
                 logger.exception("worker failed: {}", exc)
         finally:
             self._current_proc = None
             self._current_session_id = None
+            self._current_cancellable = True
             if sid:
                 self._cancelled_sessions.discard(sid)
 
@@ -593,6 +616,11 @@ class Daemon:
         """
         sid = event.session_id
         started = time.monotonic()
+        # Mirror _process_one: cancel-exempt events ride out every
+        # cancelled-check in this pipeline.
+        cancellable = (
+            event.notification_type not in self.cfg.behavior.cancel_exempt_events
+        )
         # Stage timing (DEBUG): first successful feed is our proxy for first
         # audible audio — the whole point of this pipeline is shrinking it.
         first_feed_at: float | None = None
@@ -602,6 +630,7 @@ class Daemon:
         def _register(proc: Cancellable) -> None:
             self._current_proc = proc
             self._current_session_id = sid
+            self._current_cancellable = cancellable
 
         # Mirror _process_one: derive the emotion once so it shapes both the
         # phrase prompt (the LLM's written tone) and every per-sentence TTS
@@ -619,7 +648,7 @@ class Daemon:
             async for sentence in self.router.phrase_stream(
                 event, lang=lang, emotion=emotion,
             ):
-                if sid and sid in self._cancelled_sessions:
+                if cancellable and sid and sid in self._cancelled_sessions:
                     logger.debug("DROP cancelled-mid-stream sid={}", sid)
                     break
                 spoken_parts.append(sentence)
@@ -645,7 +674,7 @@ class Daemon:
                             first_feed_at = time.monotonic()
                         continue
                     except Exception as exc:
-                        if sid and sid in self._cancelled_sessions:
+                        if cancellable and sid and sid in self._cancelled_sessions:
                             # The worker killed ffplay to cancel playback —
                             # the broken pipe is the kill, not a TTS failure.
                             # Stop speaking rather than re-synthesize the
@@ -662,7 +691,7 @@ class Daemon:
                         if session is not None:
                             await session.abort()
                             session = None
-                if sid and sid in self._cancelled_sessions:
+                if cancellable and sid and sid in self._cancelled_sessions:
                     break
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
@@ -670,7 +699,7 @@ class Daemon:
                     sentence, lang, out_path,
                     voice_id=event.voice_id, emotion=emotion,
                 )
-                if sid and sid in self._cancelled_sessions:
+                if cancellable and sid and sid in self._cancelled_sessions:
                     try:
                         out_path.unlink()
                     except OSError:
@@ -692,7 +721,7 @@ class Daemon:
                 try:
                     await session.close()
                 except Exception as exc:
-                    if sid and sid in self._cancelled_sessions:
+                    if cancellable and sid and sid in self._cancelled_sessions:
                         logger.debug(
                             "stream session ended by cancel for session {}",
                             sid,
@@ -726,7 +755,7 @@ class Daemon:
             ):
                 self._fire_remote(event, full_text)
         except Exception as exc:
-            if sid and sid in self._cancelled_sessions:
+            if cancellable and sid and sid in self._cancelled_sessions:
                 logger.debug("streaming playback cancelled for session {}", sid)
             else:
                 logger.exception("streaming worker failed: {}", exc)
@@ -738,6 +767,7 @@ class Daemon:
                 await session.abort()
             self._current_proc = None
             self._current_session_id = None
+            self._current_cancellable = True
             if sid:
                 self._cancelled_sessions.discard(sid)
 
@@ -844,7 +874,7 @@ class Daemon:
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
         *, on_spawn=None, session_id: str | None = None,
-        emotion: str | None = None,
+        emotion: str | None = None, cancellable: bool = True,
     ) -> bool:
         """If the primary TTS supports streaming, pipe chunks straight to the
         audio sink so playback begins before synthesis completes. Returns True
@@ -882,7 +912,10 @@ class Daemon:
                 )
             return True
         except Exception as exc:
-            if session_id and session_id in self._cancelled_sessions:
+            # A cancel-exempt event's sink is never kill()ed, so for it an
+            # exception here is always a genuine failure — even with a
+            # (ignored) cancel flag pending on the session.
+            if cancellable and session_id and session_id in self._cancelled_sessions:
                 logger.debug("stream cancelled for session {}", session_id)
                 return True
             logger.warning("Streaming TTS failed, falling back to synth: {}", exc)
