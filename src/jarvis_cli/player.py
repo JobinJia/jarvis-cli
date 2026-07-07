@@ -175,6 +175,11 @@ class PCMPlayer:
     #: from the decoder) versus decode lead accumulating at ~0.2s per chunk.
     PREBUFFER_SECONDS = 1.0
 
+    #: How long close() waits for the release thread before giving up on the
+    #: device. Past this we leak the stream rather than stall the speech
+    #: queue — the release can genuinely never return (see _release).
+    RELEASE_TIMEOUT_SECONDS = 5.0
+
     def __init__(self, stream: Any, rate: int, channels: int) -> None:
         self._stream = stream  # a sounddevice.RawOutputStream (callback mode)
         self._rate = rate
@@ -184,6 +189,10 @@ class PCMPlayer:
         self._started = False
         self._killed = False
         self._eof = False
+        # Terminal PortAudio ops (stop/abort/close) run exactly once, on this
+        # dedicated thread — see _release for why they can never run on the
+        # event loop.
+        self._release_thread: threading.Thread | None = None
         # Diagnostics: how often the callback ran vs ran dry — logged at
         # close() so stutter reports can be pinned to starvation (or ruled
         # out) from the daemon log alone.
@@ -273,14 +282,48 @@ class PCMPlayer:
                 self._buf.extend(chunk)
             await asyncio.to_thread(self._start_if_ready)
 
+    def _release(self, *, abort: bool) -> None:
+        """Stop (or abort) and close the stream. Runs on _release_thread,
+        NEVER on the event loop: PortAudio's stop path takes a CoreAudio
+        mutex the render callback can hold while waiting for the GIL, and
+        that wait is unbounded — an inline call froze the whole daemon for
+        six hours on 2026-07-06 (loop dead, socket backlog full, SIGTERM
+        unserviceable)."""
+        with contextlib.suppress(Exception):
+            if abort:
+                self._stream.abort()
+            else:
+                self._stream.stop()
+            self._stream.close()
+
+    def _start_release(self, *, abort: bool) -> threading.Thread:
+        """Kick off (or return the already-running) release thread. First
+        caller wins abort-vs-stop; the ops must not race each other on one
+        stream."""
+        with self._lock:
+            if self._release_thread is None:
+                self._release_thread = threading.Thread(
+                    target=self._release, kwargs={"abort": abort}, daemon=True,
+                )
+                self._release_thread.start()
+            return self._release_thread
+
+    async def _join_release(self, thread: threading.Thread) -> None:
+        await asyncio.to_thread(thread.join, self.RELEASE_TIMEOUT_SECONDS)
+        if thread.is_alive():
+            logger.warning(
+                "pcm sink: device release stuck past {}s — leaking the "
+                "stream and moving on", self.RELEASE_TIMEOUT_SECONDS,
+            )
+
     async def close(self) -> None:
         """Play out whatever is buffered, then release the device. After
         kill() this returns without raising — a cancelled playback is
         concluded, not failed."""
         self._eof = True
         if self._killed:
-            with contextlib.suppress(Exception):
-                self._stream.close()
+            # kill() already launched the abort; just bound the wait.
+            await self._join_release(self._start_release(abort=True))
             return
         # An utterance shorter than the prebuffer never hit the start
         # threshold — start now so it still plays.
@@ -289,9 +332,7 @@ class PCMPlayer:
             await asyncio.sleep(0.05)
         # Let the device drain its own last callback buffer before stopping.
         await asyncio.sleep(0.1)
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(self._stream.stop)
-            self._stream.close()
+        await self._join_release(self._start_release(abort=self._killed))
         # The final callback legitimately runs short (end of utterance), so
         # one underrun is expected; more means playback starved mid-stream.
         logger.debug(
@@ -300,13 +341,12 @@ class PCMPlayer:
 
     def kill(self) -> None:
         """Synchronous cancel hook (the `Cancellable` contract): discard
-        buffered audio immediately. Never raises — the daemon's cancel path
-        only guards against ProcessLookupError."""
+        buffered audio immediately. Never raises, never blocks — the device
+        release happens on _release_thread."""
         self._killed = True
         with self._lock:
             self._buf.clear()
-        with contextlib.suppress(Exception):
-            self._stream.abort()
+        self._start_release(abort=True)
 
     async def abort(self) -> None:
         """Kill + release the device. Never raises — this is the cleanup for

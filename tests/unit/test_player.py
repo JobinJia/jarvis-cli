@@ -1,5 +1,7 @@
 import asyncio
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -528,6 +530,33 @@ async def test_pcm_player_kill_aborts_and_close_stays_quiet():
     assert stream.stopped is False
     # Ring buffer discarded: nothing left to play.
     assert player._buffered_seconds() == 0
+
+
+@pytest.mark.asyncio
+async def test_pcm_player_kill_survives_wedged_device():
+    """The 2026-07-06 regression: PortAudio's stop path can block forever on
+    a CoreAudio mutex (AudioOutputUnitStop vs the render callback's GIL
+    wait). kill() fires on the daemon's cancel path — the event loop — so it
+    must return immediately anyway, and close() must give up after
+    RELEASE_TIMEOUT_SECONDS instead of freezing the speech queue with it."""
+    from jarvis_cli.player import PCMPlayer
+
+    created: list[_FakeRawStream] = []
+    unwedge = threading.Event()
+    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
+        player = await PCMPlayer.spawn(rate=24000, channels=1)
+        stream = created[0]
+        stream.abort = unwedge.wait  # abort now blocks like the real deadlock
+
+        t0 = time.monotonic()
+        player.kill()
+        assert time.monotonic() - t0 < 0.5  # returned, loop never blocked
+
+        with patch.object(PCMPlayer, "RELEASE_TIMEOUT_SECONDS", 0.2):
+            await player.close()  # bounded wait, then leaks the stream
+
+    assert stream.closed is False  # release never got past the wedged abort
+    unwedge.set()  # let the leaked release thread exit
 
 
 @pytest.mark.asyncio
