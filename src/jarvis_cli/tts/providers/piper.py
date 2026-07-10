@@ -61,14 +61,24 @@ class PiperProvider(TTSProvider):
                 f"`python -m piper.download_voices {name} --data-dir {self.data_dir}`"
             )
         logger.info("Loading Piper voice {} from {}", name, path)
-        voice = PiperVoice.load(str(path))
+        # download_dir defaults to the CURRENT DIRECTORY, and Chinese voices
+        # fetch their g2pW pinyin model through it on first use — under
+        # launchd the daemon's cwd is `/` (unwritable) and zh synthesis
+        # dies with a bare "# channels not specified". Anchor it to the
+        # voices dir so the g2pW model lives beside the .onnx files.
+        voice = PiperVoice.load(str(path), download_dir=self.data_dir)
         self._voices[name] = voice
         return voice
 
     async def prewarm(self) -> None:
-        """Load the English ONNX voice so the first notification doesn't pay
-        the model load."""
+        """Load the configured ONNX voices so the first notification doesn't
+        pay the model load. The zh voice is warmed only when its files are
+        already fetched — en-only installs skip the extra ~60MB (and the
+        g2pW init that zh voices pull in, ~15s measured cold)."""
         await asyncio.to_thread(self._load_voice, self._voice_name("en"))
+        zh_name = self._voice_name("zh")
+        if zh_name != self._voice_name("en") and self._voice_path(zh_name).is_file():
+            await asyncio.to_thread(self._load_voice, zh_name)
 
     async def synthesize(
         self,
