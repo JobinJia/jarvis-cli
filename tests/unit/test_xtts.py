@@ -416,3 +416,74 @@ async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
     assert " ".join(texts) == long_text
     # pre-roll + one PCM chunk per piece
     assert len(chunks) == 1 + n_pieces
+
+
+# --- dash-pause normalization -------------------------------------------------
+# Measured 2026-07-09 (3 runs per case): XTTS renders an em-dash as a dead
+# stop of 0.42-1.2s (variance included) vs 0.36-0.56s for a comma. Dashes in
+# the written line become commas in the text handed to the GPT.
+
+
+def test_normalize_pauses_en_dash_to_comma():
+    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+
+    assert _normalize_pauses(
+        "Sir, the build failed — three tests did not pass.", "en",
+    ) == "Sir, the build failed, three tests did not pass."
+
+
+def test_normalize_pauses_zh_double_dash_to_comma():
+    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+
+    assert _normalize_pauses(
+        "先生，测试未通过——三个用例失败了。", "zh",
+    ) == "先生，测试未通过，三个用例失败了。"
+
+
+def test_normalize_pauses_keeps_hyphens_and_plain_text():
+    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+
+    line = "Sir, he wants to run pre-commit with --no-verify."
+    assert _normalize_pauses(line, "en") == line
+
+
+def test_normalize_pauses_trailing_dash_does_not_dangle():
+    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+
+    assert _normalize_pauses(
+        "Sir, he wishes to push to main —", "en",
+    ) == "Sir, he wishes to push to main"
+
+
+def test_stream_receives_normalized_text():
+    """The GPT must never see the dash — verify at the inference boundary."""
+    import numpy as np
+
+    class _Chunk:
+        def __init__(self, arr):
+            self._arr = arr
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._arr
+
+    p = XTTSProvider(XTTSConfig(speaker_embedding="dummy.pth"))
+    fake_model = MagicMock()
+    fake_model.synthesizer.tts_model.inference_stream.side_effect = lambda **kw: iter(
+        [_Chunk(np.array([0.5], dtype=np.float32))]
+    )
+
+    async def _run():
+        with patch.object(p, "_load_model", return_value=fake_model), \
+                patch.object(p, "_conditioning_for", return_value=("g", "s")):
+            return [c async for c in p.stream("A — B.", lang="en")]
+
+    import asyncio
+    asyncio.run(_run())
+    sent = fake_model.synthesizer.tts_model.inference_stream.call_args.kwargs["text"]
+    assert sent == "A, B."

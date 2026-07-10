@@ -80,6 +80,25 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;。!?;])\s+")
 # quarter second of silent PCM: the wake-up burns padding, not speech.
 _PREROLL_SECONDS = 0.25
 
+# XTTS reads an em/en dash as a dead stop — measured (2026-07-09, 3-run
+# probe per case) at 0.42-1.2s for a single dash versus 0.36-0.56s for a
+# comma, with run-to-run variance users hear as random dragging. The Jarvis
+# house style leans on "clause — clause" in nearly every line, so every
+# notification carried that lottery. The written form keeps its dashes;
+# the audio gets commas. ASCII hyphens (file names, CLI flags) untouched.
+_DASH_RUN = re.compile(r"\s*[—–]+\s*")
+
+
+def _normalize_pauses(text: str, lang: str) -> str:
+    """Rewrite dash pauses as comma pauses in the text handed to the GPT."""
+    sep = "，" if lang == "zh" else ", "
+    out, n = _DASH_RUN.subn(sep, text)
+    if n:
+        # An utterance-final dash (LLM trailing off) must not become a
+        # dangling comma — drop it and let the sentence just end.
+        out = out.rstrip(" ,，")
+    return out
+
 
 def _split_for_gpt(text: str, limit: int = _GPT_CHAR_LIMIT) -> list[str]:
     """Split `text` into GPT-sized pieces at sentence boundaries.
@@ -217,6 +236,7 @@ class XTTSProvider(TTSProvider):
         # embedding); the override is ignored. Future: could resolve voice_id
         # to a named embedding under voices/<voice_id>.pth for multi-voice.
         _ = voice_id
+        text = _normalize_pauses(text, lang)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Emotion shapes prosody, not timbre: nudge speed and sampling
@@ -319,6 +339,7 @@ class XTTSProvider(TTSProvider):
         begin on the first chunk while the rest is still decoding.
         """
         _ = voice_id  # XTTS clones from ref/embedding; no swappable voice id.
+        text = _normalize_pauses(text, lang)
         language = _LANG_CODE.get(lang, "en")
         # Same prosody shaping as the batch path — see synthesize().
         speed_mult, temp_delta = _prosody_for(emotion)
