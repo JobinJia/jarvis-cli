@@ -16,7 +16,7 @@ from jarvis_cli.types import Event
 
 
 @pytest.mark.asyncio
-async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
+async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch, no_stream_tts):
     cfg = Config()
     cfg.paths.socket = str(tmp_path / "j.sock")
     cfg.paths.log = str(tmp_path / "d.log")
@@ -41,6 +41,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
     d = Daemon(cfg, health_port=0)
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
+    no_stream_tts(d)
     monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
 
     task = asyncio.create_task(d.run())
@@ -83,7 +84,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch):
+async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch, no_stream_tts):
     cfg = Config()
     cfg.behavior.dedup_window_seconds = 10
     cfg.paths.socket = str(tmp_path / "j.sock")
@@ -104,6 +105,7 @@ async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch):
     d = Daemon(cfg, health_port=0)
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
+    no_stream_tts(d)
     monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
 
     task = asyncio.create_task(d.run())

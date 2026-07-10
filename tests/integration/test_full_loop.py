@@ -13,7 +13,7 @@ from jarvis_cli.hook_client import forward_event
 
 
 @pytest.mark.asyncio
-async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch):
+async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch, no_stream_tts):
     cfg = Config()
     cfg.paths.socket = str(tmp_path / "j.sock")
 
@@ -35,6 +35,7 @@ async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch):
     d = Daemon(cfg, health_port=0)
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
+    no_stream_tts(d)
     monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
 
     daemon_task = asyncio.create_task(d.run())
