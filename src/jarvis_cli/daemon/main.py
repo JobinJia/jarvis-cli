@@ -106,7 +106,14 @@ class Daemon:
         )
         primary_tts = _make_tts_provider(cfg.tts.provider, cfg) or SayProvider()
         fallback_tts = _make_tts_provider(cfg.tts.fallback, cfg)
-        self.tts = TTSEngine(primary=primary_tts, fallback=fallback_tts)
+        overrides: dict[str, TTSProvider] = {}
+        if cfg.tts.provider_zh and cfg.tts.provider_zh != cfg.tts.provider:
+            zh_tts = _make_tts_provider(cfg.tts.provider_zh, cfg)
+            if zh_tts is not None:
+                overrides["zh"] = zh_tts
+        self.tts = TTSEngine(
+            primary=primary_tts, fallback=fallback_tts, overrides=overrides,
+        )
         self.health = HealthServer(
             host="127.0.0.1",
             port=health_port,
@@ -658,8 +665,10 @@ class Daemon:
                 )
                 # Try streaming TTS first (e.g. XTTS/ElevenLabs), feeding the
                 # shared ffplay pipe; fall back to file-based synth+play for
-                # this sentence on failure.
-                primary = self.tts.primary
+                # this sentence on failure. Lang-routed: a zh override
+                # provider (tts.provider_zh) may not stream — those sentences
+                # take the file-synth path below.
+                primary = self.tts.primary_for(lang)
                 if primary.supports_streaming:
                     try:
                         if session is None:
@@ -888,7 +897,7 @@ class Daemon:
         `_cancelled_sessions` and return True so the caller treats it as
         "playback already concluded".
         """
-        primary = self.tts.primary
+        primary = self.tts.primary_for(lang)
         if not primary.supports_streaming:
             return False
         try:
@@ -950,12 +959,14 @@ class Daemon:
         knows what (if anything) it needs to warm — XTTS loads the model and
         conditioning latents; API/subprocess providers are no-ops. Best-effort:
         any failure just defers the cost to the first real event."""
-        primary = self.tts.primary
-        try:
-            await primary.prewarm()
-            logger.info("tts: prewarm ready ({})", primary.name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("tts: prewarm failed ({})", exc)
+        for provider in dict.fromkeys(
+            (self.tts.primary, *self.tts.overrides.values()),
+        ):
+            try:
+                await provider.prewarm()
+                logger.info("tts: prewarm ready ({})", provider.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tts: prewarm failed ({})", exc)
 
     async def _prewarm_briefing(self) -> None:
         """Warm the weather cache at daemon start so the first session_start

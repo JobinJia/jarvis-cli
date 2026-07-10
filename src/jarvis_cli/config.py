@@ -217,6 +217,11 @@ class PiperConfig:
 class TTSConfig:
     provider: str = "xtts"
     fallback: str = "say"
+    # Optional Chinese-primary override (e.g. "piper" for a native-Mandarin
+    # fixed voice). The XTTS Bettany clone is English-born — cross-lingual
+    # cloning reads Chinese with a foreign accent — so zh routes to a native
+    # speaker while en keeps the clone. Empty = no override.
+    provider_zh: str = ""
     # Route raw-PCM streaming through the in-process sounddevice sink instead
     # of an ffplay subprocess. Off by default: when synthesis runs slower than
     # realtime (XTTS on MPS), the blocking PortAudio stream underruns audibly

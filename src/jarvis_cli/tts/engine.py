@@ -1,4 +1,4 @@
-"""TTS engine: chains primary → fallback providers."""
+"""TTS engine: chains primary → fallback providers, with per-language routing."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,9 +14,21 @@ class TTSEngine:
         self,
         primary: TTSProvider,
         fallback: TTSProvider | None,
+        overrides: dict[Lang, TTSProvider] | None = None,
     ) -> None:
         self.primary = primary
         self.fallback = fallback
+        # Per-language primary override (tts.provider_zh). Why: one provider
+        # rarely speaks both languages natively — the XTTS Bettany clone is
+        # English-born and reads Chinese with a foreign accent, while a fixed
+        # zh voice has no business reading the English lines. Routing picks
+        # the native speaker per utterance; the fallback chain is shared.
+        self.overrides: dict[Lang, TTSProvider] = overrides or {}
+
+    def primary_for(self, lang: Lang) -> TTSProvider:
+        """The primary provider for `lang` — the override when one is
+        configured, else the global primary."""
+        return self.overrides.get(lang, self.primary)
 
     async def synthesize(
         self,
@@ -26,7 +38,7 @@ class TTSEngine:
         voice_id: str | None = None,
         emotion: str | None = None,
     ) -> Path:
-        for provider in (self.primary, self.fallback):
+        for provider in (self.primary_for(lang), self.fallback):
             if provider is None:
                 continue
             try:
