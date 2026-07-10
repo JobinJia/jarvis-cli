@@ -49,6 +49,17 @@ class PhraseRouter:
         # `avoid` so the model doesn't repeat itself back-to-back.
         self._last_idle_line: str | None = None
 
+    def _address_for(self, lang: Lang) -> str | None:
+        """The configured form of address for `lang`, or None (prompt default)
+        when no config is attached."""
+        if self.cfg is None:
+            return None
+        return (
+            self.cfg.behavior.address_zh
+            if lang == "zh"
+            else self.cfg.behavior.address_en
+        )
+
     async def phrase(
         self, event: Event, lang: Lang,
         emotion: Emotion | None = None,
@@ -81,6 +92,7 @@ class PhraseRouter:
             avoid=self._last_idle_line
             if event.notification_type == "idle_prompt" else None,
             emotion=emotion,
+            address=self._address_for(lang),
         )
         primary_failed = False
         for i, provider in enumerate([self.primary, *self.fallbacks]):
@@ -170,6 +182,7 @@ class PhraseRouter:
             avoid=self._last_idle_line
             if event.notification_type == "idle_prompt" else None,
             emotion=emotion,
+            address=self._address_for(lang),
         )
         if self.primary is None:
             raise RuntimeError("No primary provider configured")

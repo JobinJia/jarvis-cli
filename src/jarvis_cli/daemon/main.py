@@ -514,6 +514,7 @@ class Daemon:
                     cache=self._weather_cache,
                     llm=self.router.primary,
                     humor_level=self.cfg.behavior.humor_level,
+                    address=self.cfg.behavior.address_en,
                 )
             else:
                 lang = (

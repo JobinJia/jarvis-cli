@@ -417,7 +417,7 @@ def _render_template(
 _LLM_SYSTEM_PROMPT_TEMPLATE = (
     "You are JARVIS, Tony Stark's British AI butler from the Iron Man films. "
     "Speak in his original cadence: brief, dry, deferential, never sycophantic. "
-    "Address the user as 'sir'. Compose ONE opening line for a new session. "
+    "Address the user as '{addr}'. Compose ONE opening line for a new session. "
     "{humor}\n"
     "Hard rules:\n"
     "• English only. No markdown. No quotes around your response.\n"
@@ -538,9 +538,11 @@ async def _compose_briefing_via_llm(
     weather: WeatherSnapshot | None,
     humor_level: int,
     now: datetime,
+    address: str = "sir",
 ) -> str | None:
     system = _LLM_SYSTEM_PROMPT_TEMPLATE.format(
         humor=_briefing_humor_clause(humor_level),
+        addr=address,
     )
     messages = [
         {"role": "system", "content": system},
@@ -580,6 +582,7 @@ async def compose_briefing(
     llm: PhraseProvider | None = None,
     rng: random.Random | None = None,
     humor_level: int = 1,
+    address: str = "sir",
 ) -> tuple[str, Lang]:
     """Build the spoken text + language for a session_start event.
 
@@ -589,8 +592,9 @@ async def compose_briefing(
     gets a different one). If that fails or no LLM is wired, fall back to
     rotating among hand-written template variants so we still vary by call.
 
-    `humor_level` (0-3) shapes the LLM tone. Templates ignore it — they're
-    already fixed phrasings, calibrated to land in the level-1 register.
+    `humor_level` (0-3) shapes the LLM tone; `address` is how the line
+    addresses the user. Templates ignore both — they're fixed phrasings,
+    calibrated to land in the level-1 "sir" register.
     """
     now = now or datetime.now()
     rng = rng or random.Random()
@@ -608,7 +612,7 @@ async def compose_briefing(
             llm,
             greeting=greeting, time_phrase=time_phrase,
             date_phrase=date_phrase, weather=weather,
-            humor_level=humor_level, now=now,
+            humor_level=humor_level, now=now, address=address,
         )
         if line:
             return line, "en"

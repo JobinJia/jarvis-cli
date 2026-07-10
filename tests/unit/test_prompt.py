@@ -147,3 +147,77 @@ def test_build_messages_failure_and_complete_are_mutually_exclusive_clauses():
     )[0]["content"]
     assert "FAILURE" in fail and "COMPLETION" not in fail
     assert "COMPLETION" in done and "FAILURE" not in done
+
+
+# --- per-level few-shot examples ---------------------------------------------
+# The 2026-07-09 probe (qwen3:8b): with one fixed example set, humor 0 and 3
+# produced identical output — examples beat the system-prompt clause on small
+# models. The few-shots must therefore differ per level.
+
+
+def _assistant_lines(msgs) -> list[str]:
+    return [m["content"] for m in msgs[1:-1] if m["role"] == "assistant"]
+
+
+def test_few_shot_examples_differ_across_humor_levels():
+    per_level = [
+        _assistant_lines(build_messages(
+            _ev(), lang, "x", target_chars=70, hard_cap=120, humor_level=lvl,
+        ))
+        for lang in ("en", "zh")
+        for lvl in (0, 3)
+    ]
+    en0, en3, zh0, zh3 = per_level
+    assert en0 != en3
+    assert zh0 != zh3
+    # More than a token difference: most scenarios should be reworded.
+    assert sum(a != b for a, b in zip(en0, en3)) >= 6
+
+
+def test_few_shot_failure_examples_stay_grave_at_max_humor():
+    """tool_failure examples must not joke at any level — a wisecrack about a
+    failure reads as mockery, and _FAILURE_CLAUSE forbids banter outright."""
+    msgs = build_messages(_ev(), "en", "x",
+                          target_chars=70, hard_cap=120, humor_level=3)
+    failure_reply = next(
+        msgs[i + 1]["content"] for i, m in enumerate(msgs)
+        if m["role"] == "user" and "tool_failure" in m["content"]
+    )
+    assert "fail" in failure_reply.lower()
+    assert "?" not in failure_reply  # statements, not quips
+
+
+def test_few_shot_out_of_range_level_clamps():
+    hi = _assistant_lines(build_messages(
+        _ev(), "en", "x", target_chars=70, hard_cap=120, humor_level=99,
+    ))
+    three = _assistant_lines(build_messages(
+        _ev(), "en", "x", target_chars=70, hard_cap=120, humor_level=3,
+    ))
+    assert hi == three
+
+
+# --- configurable address ----------------------------------------------------
+
+
+def test_address_substituted_in_system_and_few_shots_en():
+    msgs = build_messages(_ev(), "en", "x",
+                          target_chars=70, hard_cap=120, address="Boss")
+    assert "Address the user as 'Boss'" in msgs[0]["content"]
+    replies = _assistant_lines(msgs)
+    assert all("Sir" not in r and "sir" not in r for r in replies)
+    assert any("Boss" in r for r in replies)
+
+
+def test_address_substituted_in_few_shots_zh():
+    msgs = build_messages(_ev(), "zh", "x",
+                          target_chars=70, hard_cap=120, address="老板")
+    replies = _assistant_lines(msgs)
+    assert all("先生" not in r for r in replies)
+    assert any("老板" in r for r in replies)
+
+
+def test_default_address_unchanged():
+    msgs = build_messages(_ev(), "en", "x", target_chars=70, hard_cap=120)
+    assert "Address the user as 'Sir'" in msgs[0]["content"]
+    assert any("Sir" in r for r in _assistant_lines(msgs))

@@ -313,14 +313,21 @@ class BehaviorConfig:
     # acted on. 0 disables. Pre-baked text (`say --text`) and session_start
     # briefings are exempt: those should speak whenever they surface.
     stale_event_max_age_seconds: float = 60.0
-    # How much wit Jarvis allows himself, 0-3. Plumbed into both the phrase
-    # router system prompt and the session-start briefing prompt.
+    # How much wit Jarvis allows himself, 0-3. Selects both the tone clause
+    # AND the few-shot example set in the phrase prompt (the examples are
+    # what actually move a small model), plus the briefing tone.
     #   0 — deadpan formal butler (no jokes)
     #   1 — hint of dry wit (default for first-time users)
     #   2 — MCU Jarvis: dry banter, witty asides
     #   3 — Tony-mode: openly sardonic, never sycophantic
     # Out-of-range values are clamped on load by `load_config`.
+    # Adjust live with `jarvis-cli tone <0-3>` — no daemon restart needed.
     humor_level: int = 1
+    # How Jarvis addresses the user, per output language. Substituted into
+    # the few-shot examples as well as the system prompt, so small models
+    # actually honor it.
+    address_en: str = "Sir"
+    address_zh: str = "先生"
     # Streaming pipeline: overlap LLM token generation, sentence chunking,
     # and TTS synthesis so playback of the first sentence starts before the
     # LLM finishes. Reduces perceived latency from 2-6s to ~1s. Opt-in
