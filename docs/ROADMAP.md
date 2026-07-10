@@ -180,6 +180,19 @@ Layer 2: PyPI 包 (核心引擎)
 
 3. **多 agent 协同感知**——orchestrate 重度使用场景,`subagent_spawned` 事件已打底,差播报内容与节流策略。
 4. **Plugin 化分发 Phase 3-4**——`jarvis-cli doctor`、say-only 升级提示、marketplace 提交。
+5. **中文语音重做(TODO,2026-07-11 挂起,退回英文)**——第一轮尝试整体失败,需要重新设计:
+   - 第一轮的否决记录(别再走回头路,探针数据见 memory `zh-voice-architecture`):
+     克隆路线(XTTS/CosyVoice + 英文 Bettany 参考)必带洋腔;CosyVoice cross_lingual 必复读;
+     zero_shot 锚定止住复读但把英音克隆进普通话("伦敦中文腔");Piper huayan/chaowen、
+     macOS 婷婷 AI 味重——全部被耳测否决。用户的验收标准:自然真人感的标准普通话男声。
+   - 候选待验证:Kokoro-82M v1.1-zh(本地、Apache-2.0、预置母语音色、实测 RTF 0.18-0.25;
+     模型与 zm_010/zm_025/zm_031 已在 `~/.jarvis-cli/models/kokoro-zh/`,音色未经用户认可)。
+     其它未探索路线:fish-speech / IndexTTS-2 本地跑 MPS 的可行性、云端 TTS(Edge 等,用户未点头)、
+     用户提供中文男声样本走已验证的 CosyVoice 克隆管线。
+   - 可复用的基建(这轮沉淀,与最终方案无关都能用):TTS 引擎按语言路由(`provider_zh`)、
+     时长守卫按语言 fallback(`fallback_cps_zh`)、Piper g2pW 路径修复、CosyVoice prewarm。
+   - 环境坑:HF 直连在本机走系统代理会断(用 hf-mirror + curl);`kokoro`+`misaki[zh]`+`click`
+     已入 venv 但未进 extras,resync 会丢(同 cosyvoice3 wheel)。
 
 ### 第三梯队:做深(按需)
 
