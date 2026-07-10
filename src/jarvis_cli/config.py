@@ -188,6 +188,11 @@ class CosyVoiceConfig:
     # may pass — duration alone cannot separate it from clean jitter.
     duration_ratio_threshold: float = 1.5
     fallback_cps: float = 12.0
+    # Chinese runs ~4-5 chars/second — a third of English's chars-per-second
+    # rate. With the en value a clean 15-char zh take (≈3.8s vs "expected"
+    # 1.25s) mis-flags as a double-take and burns every retry attempt
+    # (measured 2026-07-10: 4x20s futile resynths per idle line).
+    fallback_cps_zh: float = 4.5
     max_synth_attempts: int = 4
     save_synth_samples: bool = False
     sample_dir: str = "~/.jarvis-cli/cache/samples"

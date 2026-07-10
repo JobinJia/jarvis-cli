@@ -20,7 +20,7 @@ from loguru import logger
 
 from ...config import CosyVoiceConfig
 from ...types import Lang
-from ..duration_guard import _MIN_CLEAN_CPS, DurationBaseline, DurationVerdict
+from ..duration_guard import DurationBaseline, DurationVerdict
 from .base import TTSProvider
 
 _SAMPLE_RATE = 24000  # CosyVoice 3 fixed output rate (mono float).
@@ -51,6 +51,11 @@ class CosyVoiceProvider(TTSProvider):
 
     def _ref_text_for(self, lang: Lang) -> str:
         return self.cfg.ref_text_zh if lang == "zh" else self.cfg.ref_text_en
+
+    async def prewarm(self) -> None:
+        """Load the Candle model at daemon start (~11s measured) so the first
+        notification doesn't pay it."""
+        await asyncio.to_thread(self._load_model)
 
     def _load_model(self) -> Any:
         """Lazy-load the CosyVoice 3 model. Called at most once per provider
@@ -86,6 +91,12 @@ class CosyVoiceProvider(TTSProvider):
         # baseline — all lengths checked. If every attempt is flagged we ship
         # the SHORTEST take (least likely to contain an audible repeat) so the
         # daemon always speaks.
+        # Chars-per-second differs per language (zh is ~3x slower than en);
+        # the guard's pre-baseline estimate must match or every clean zh
+        # take reads as a double-take.
+        fallback_cps = (
+            self.cfg.fallback_cps_zh if lang == "zh" else self.cfg.fallback_cps
+        )
         best_audio: np.ndarray | None = None
         best_duration = 0.0
         for attempt in range(1, self.cfg.max_synth_attempts + 1):
@@ -96,7 +107,7 @@ class CosyVoiceProvider(TTSProvider):
             verdict = self._baseline.check(
                 text, duration,
                 ratio_threshold=self.cfg.duration_ratio_threshold,
-                fallback_cps=self.cfg.fallback_cps,
+                fallback_cps=fallback_cps,
             )
             logger.info(
                 "CosyVoice synth: chars={} duration={:.2f}s expected={:.2f}s "
@@ -126,12 +137,16 @@ class CosyVoiceProvider(TTSProvider):
             )
 
         # All attempts flagged: ship the shortest take. Escape valve — learn
-        # its duration if its pace is plausibly clean (gated by _MIN_CLEAN_CPS),
-        # so a baseline that drifted too low can recover instead of flagging
-        # this text forever. A genuine double-take (too slow) is left unlearned.
+        # its duration if its pace is plausibly clean, so a baseline that
+        # drifted too low can recover instead of flagging this text forever.
+        # A genuine double-take (too slow) is left unlearned. The clean-pace
+        # floor scales with the language's cps the same way _MIN_CLEAN_CPS
+        # (9.0) relates to the en fallback (12.0): 75% of a clean rate.
         if best_audio is not None:
             self._write_wav(out_path, best_audio)
-            self._baseline.record(text, best_duration, min_cps=_MIN_CLEAN_CPS)
+            self._baseline.record(
+                text, best_duration, min_cps=fallback_cps * 0.75,
+            )
             logger.warning(
                 "CosyVoice gave up after {} attempts; shipping shortest take "
                 "({:.2f}s) text={!r}",
