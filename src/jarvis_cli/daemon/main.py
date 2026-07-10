@@ -82,8 +82,14 @@ def _make_tts_provider(name: str, cfg: Config) -> TTSProvider | None:
 
 
 class Daemon:
-    def __init__(self, cfg: Config, health_port: int = 9527) -> None:
+    def __init__(
+        self, cfg: Config, health_port: int = 9527,
+        config_path: str | Path = DEFAULT_CONFIG_PATH,
+    ) -> None:
         self.cfg = cfg
+        # Where `reload_behavior` re-reads from — the same file `cfg` was
+        # loaded from at startup.
+        self._config_path = config_path
         self.queue = BoundedEventQueue(maxsize=cfg.behavior.queue_max_size)
         self.dedup = DedupWindow(window_seconds=cfg.behavior.dedup_window_seconds)
         # Build the fallback chain: prefer the multi-level `fallbacks` list,
@@ -292,10 +298,36 @@ class Daemon:
             logger.debug("{}: verification skipped ({})", noun, exc)
             return VerifyResult(UNCLEAR)
 
+    def _reload_behavior(self) -> dict:
+        """Re-read config.toml and swap the [behavior] section in place.
+
+        The Config object is shared by reference with the phrase router (it
+        reads cfg.behavior.* per call), so replacing `.behavior` takes effect
+        on the very next event — no TTS reload, no daemon restart. Only
+        [behavior] is refreshed; LLM/TTS/provider changes still need a
+        restart, which is why this doesn't swap the whole Config."""
+        try:
+            fresh = load_config(self._config_path)
+        except Exception as exc:  # noqa: BLE001 — a bad config must not kill the daemon
+            logger.warning("reload_behavior failed: {}", exc)
+            return {"ok": False, "error": str(exc)}
+        self.cfg.behavior = fresh.behavior
+        # Queue/dedup sizes are constructor-fixed; note them so a user who
+        # edits those fields learns why nothing changed.
+        logger.info(
+            "behavior reloaded: humor_level={} address_en={!r} "
+            "(queue/dedup sizes still need a restart)",
+            fresh.behavior.humor_level, fresh.behavior.address_en,
+        )
+        return {"ok": True, "humor_level": fresh.behavior.humor_level}
+
     async def _on_query(self, payload: dict) -> dict:
-        """Request/response handler for the hook's skill_query / skill_refresh.
-        Now also runs MCP intent matching with LLM verification.
-        Runs CPU-bound retrieval off the event loop. Never raises."""
+        """Request/response handler for the hook's skill_query / skill_refresh,
+        the CLI's reload_behavior, and MCP intent matching with LLM
+        verification. Runs CPU-bound retrieval off the event loop. Never
+        raises."""
+        if payload.get("command") == "reload_behavior":
+            return self._reload_behavior()
         if payload.get("command") == "skill_refresh":
             if self.skills is not None:
                 await asyncio.to_thread(self.skills.refresh)
@@ -1002,11 +1034,9 @@ class Daemon:
                 Path(self.cfg.paths.socket),
                 self._on_event,
                 on_cancel=self.cancel_session,
-                on_query=(
-                    self._on_query
-                    if self.skills is not None or self.mcp is not None
-                    else None
-                ),
+                # Always wired: handles reload_behavior even when skills/MCP
+                # are disabled (the skill paths no-op on None services).
+                on_query=self._on_query,
             )
         finally:
             for t in tasks:
@@ -1028,7 +1058,11 @@ def main() -> int:
     cfg = load_config(args.config)
     logger.add(cfg.paths.log, rotation="10 MB", retention="14 days", level="INFO")
     try:
-        asyncio.run(Daemon(cfg, health_port=args.health_port).run())
+        asyncio.run(
+            Daemon(
+                cfg, health_port=args.health_port, config_path=args.config,
+            ).run()
+        )
     except KeyboardInterrupt:
         return 0
     return 0

@@ -55,9 +55,10 @@ async def serve_unix_socket(
 
     Event rows (with `notification_type`) go to `on_event`.
     `{"command":"cancel","session_id":"..."}` rows go to `on_cancel`.
-    `{"command":"skill_query"|"skill_refresh",...}` rows go to `on_query`,
-    whose returned dict is written back as a single JSON line — the only
-    request/response path on this socket (everything else is fire-and-forget).
+    `{"command":"skill_query"|"skill_refresh"|"reload_behavior",...}` rows go
+    to `on_query`, whose returned dict is written back as a single JSON line —
+    the only request/response path on this socket (everything else is
+    fire-and-forget).
     Rows missing session_id on cancel are dropped silently.
     """
     sock_path = Path(sock_path)
@@ -82,7 +83,9 @@ async def serve_unix_socket(
                         await on_cancel(sid)
                     continue
                 if isinstance(payload, dict) and \
-                        payload.get("command") in ("skill_query", "skill_refresh"):
+                        payload.get("command") in (
+                            "skill_query", "skill_refresh", "reload_behavior",
+                        ):
                     if on_query is not None:
                         try:
                             reply = await on_query(payload)

@@ -918,6 +918,80 @@ def cmd_say(args: argparse.Namespace) -> int:
         s.close()
 
 
+def cmd_tone(args: argparse.Namespace) -> int:
+    """Adjust humor_level live: rewrite config.toml, hot-reload the daemon's
+    [behavior] section over the socket, and (unless --quiet) have Jarvis speak
+    a preview line in the new tone so the change is audible immediately."""
+    import socket as _socket
+
+    from .config import load_config
+    from .hook_client import _request_reply
+
+    cfg_path = Path(DEFAULT_CONFIG_PATH).expanduser()
+
+    if args.level is None:
+        cfg = load_config(cfg_path)
+        cur = max(0, min(3, cfg.behavior.humor_level))
+        print(f"current tone: {cur} — {_HUMOR_LABELS[cur][0]}")
+        for i, (label, desc) in enumerate(_HUMOR_LABELS):
+            marker = "*" if i == cur else " "
+            print(f" {marker} {i}  {label:<10} {desc}")
+        print("set with: jarvis-cli tone <0-3>")
+        return 0
+
+    level = args.level
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read {cfg_path}: {exc}", file=sys.stderr)
+        return 1
+    new_text, n = re.subn(
+        r"(?m)^(\s*humor_level\s*=\s*)\d+", rf"\g<1>{level}", text,
+    )
+    if n == 0:
+        print(
+            f"no `humor_level = N` line in {cfg_path} — run "
+            "`jarvis-cli install --reconfigure` first",
+            file=sys.stderr,
+        )
+        return 1
+    cfg_path.write_text(new_text, encoding="utf-8")
+    print(f"tone set to {level} — {_HUMOR_LABELS[level][0]}")
+
+    cfg = load_config(cfg_path)
+    reply = _request_reply(
+        cfg.paths.socket, {"command": "reload_behavior"}, timeout_s=3.0,
+    )
+    if not (reply and reply.get("ok")):
+        print("daemon not reachable — the new tone applies on its next start")
+        return 0
+    print("daemon reloaded — live now")
+
+    if args.quiet:
+        return 0
+    # Preview: a synthetic idle_prompt phrased by the LLM under the NEW
+    # humor level. Unique tool_name defeats the dedup window on repeat runs.
+    import uuid as _uuid
+
+    payload = {
+        "notification_type": "idle_prompt",
+        "tool_name": f"tone-preview-{_uuid.uuid4().hex[:8]}",
+        "tool_input": {},
+        "cwd": os.getcwd(),
+        "session_id": "tone-preview",
+    }
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        s.connect(cfg.paths.socket)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        print("preview queued — you should hear the new tone shortly")
+    except OSError:
+        pass
+    finally:
+        s.close()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="jarvis-cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -967,6 +1041,20 @@ def main() -> int:
         "macOS `say` voice name like Karen); defaults to config",
     )
     p_say.set_defaults(func=cmd_say)
+    p_tone = sub.add_parser(
+        "tone",
+        help="show or set Jarvis's humor level (0-3) — applies live, no "
+        "daemon restart",
+    )
+    p_tone.add_argument(
+        "level", nargs="?", type=int, choices=[0, 1, 2, 3], default=None,
+        help="0=deadpan 1=light wit 2=MCU Jarvis 3=Tony-mode; omit to show",
+    )
+    p_tone.add_argument(
+        "--quiet", action="store_true",
+        help="skip the spoken preview line after applying",
+    )
+    p_tone.set_defaults(func=cmd_tone)
 
     from .skills.cli import add_subparser as _add_skills_subparser
 
