@@ -150,10 +150,129 @@ def test_forward_event_cancel_disabled_by_flag(tmp_path: Path):
     assert ok is False
 
 
+# --- subagent-origin muting -------------------------------------------------
+# CC stamps every hook payload fired from inside a subagent's work with
+# `agent_id` + `agent_type` (verified empirically 2026-07-18 against a live
+# headless session); main-session payloads carry neither, and session_id is
+# identical for both — so that pair is the only marker separating them. We
+# require BOTH fields: one of them turning up on a main-session payload in a
+# future CC build would otherwise silence Jarvis globally with no trace.
+
+
+def test_forward_event_drops_subagent_tool_failure_by_default(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "session_id": "sess-1",
+        "agent_id": "ad419dede82c8f0c1",
+        "agent_type": "general-purpose",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is False
+
+
+def test_forward_event_keeps_subagent_events_when_mute_disabled(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "session_id": "sess-1",
+        "agent_id": "ad419dede82c8f0c1",
+        "agent_type": "general-purpose",
+        "cwd": "/x",
+    }
+    ok = forward_event(
+        io.StringIO(json.dumps(payload)), sock_path, mute_subagent_events=False,
+    )
+    assert ok is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "tool_failure"
+
+
+def test_forward_event_subagent_start_exempt_from_mute(tmp_path: Path):
+    """SubagentStart carries agent_id too, but it is a session-level lifecycle
+    notice with its own notification type — the events allowlist governs it,
+    not this mute."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "SubagentStart",
+        "session_id": "sess-1",
+        "agent_id": "ad419dede82c8f0c1",
+        "agent_type": "general-purpose",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "subagent_spawned"
+
+
+def test_forward_event_drops_subagent_stop(tmp_path: Path):
+    """SubagentStop is NOT exempt: it translates to the same `task_complete` as
+    the main session's Stop, so exempting it would announce "all done" once per
+    finished subagent — exactly the chatter this mute exists to remove."""
+    sock_path = tmp_path / "j.sock"
+    _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "SubagentStop",
+        "session_id": "sess-1",
+        "agent_id": "ad419dede82c8f0c1",
+        "agent_type": "general-purpose",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is False
+
+
+def test_forward_event_mute_needs_both_subagent_markers(tmp_path: Path):
+    """`agent_id` alone does not mute. Two corroborating markers keep a future
+    CC build that stamps one of them on main-session payloads from silencing
+    Jarvis entirely — losing the mute is recoverable, losing every event is not."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "session_id": "sess-1",
+        "agent_id": "ad419dede82c8f0c1",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "tool_failure"
+
+
+def test_forward_event_main_session_events_unaffected_by_mute(tmp_path: Path):
+    """No agent_id → main-session event → forwarded as usual."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "session_id": "sess-1",
+        "cwd": "/x",
+    }
+    ok = forward_event(io.StringIO(json.dumps(payload)), sock_path)
+    assert ok is True
+    row = _recv_one(received)
+    assert row["notification_type"] == "tool_failure"
+
+
 def test_forward_event_en_mode_forwards_raw_for_llm_translation(tmp_path: Path):
-    """Default `en` mode does NOT pre-bake text; it forwards the question
-    payload so the daemon's phrase router calls the LLM to translate/rephrase
-    into Jarvis-toned English."""
+    """`en` mode with a CHINESE question does NOT pre-bake text; it forwards
+    the question payload so the daemon's phrase router calls the LLM to
+    translate into Jarvis-toned English. (Same-language questions take the
+    verbatim shortcut — see the tests below.)"""
     sock_path = tmp_path / "j.sock"
     received = _start_unix_echo_server(sock_path)
     payload = {

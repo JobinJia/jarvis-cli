@@ -229,6 +229,7 @@ events = ["permission_prompt", "idle_prompt", "elicitation_dialog", "ask_user_qu
 phrase_target_chars = 70
 phrase_hard_cap = 120
 cancel_on_user_action = true   # stop playback when you respond in the originating CC session
+mute_subagent_events = true    # subagents work silently; SubagentStart still announces the dispatch
 
 [behavior.privacy]
 cloud_redaction = true         # scrub HOME path + secret-shaped tokens before send

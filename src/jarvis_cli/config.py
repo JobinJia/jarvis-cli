@@ -309,6 +309,12 @@ class BehaviorConfig:
     # When True (default), the hook sends a cancel signal on UserPromptSubmit /
     # PostToolUse so the daemon stops any in-flight audio for that session.
     cancel_on_user_action: bool = True
+    # When True (default), hook events fired from INSIDE a subagent's work
+    # (its tool calls, failures, prompts — payloads carrying both `agent_id`
+    # and `agent_type`) are dropped before reaching the daemon, so only
+    # main-session activity speaks. The SubagentStart lifecycle notice is
+    # exempt — it stays governed by the `events` allowlist above.
+    mute_subagent_events: bool = True
     # Event types immune to that cancel: they keep playing (and stay queued)
     # when the session moves on. A permission/idle prompt goes stale the
     # moment the user acts, but a failure notice stays true — and with a

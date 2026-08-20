@@ -55,6 +55,21 @@ def _is_muted() -> bool:
     return value.lower() not in ("", "0", "false")
 
 
+def _hook_debug(template: str, *args: object) -> None:
+    """Diagnostic line on stderr, only when `JARVIS_HOOK_DEBUG` is set.
+
+    The hook runs as a short-lived subprocess with no logger; silent drops are
+    otherwise invisible, and this project has lost days to audio that stopped
+    with no trace. Off by default so CC never shows hook noise to the user.
+    """
+    if os.environ.get("JARVIS_HOOK_DEBUG", "").lower() in ("", "0", "false"):
+        return
+    try:
+        sys.stderr.write("jarvis-hook: " + template.format(*args) + "\n")
+    except Exception:  # noqa: BLE001 — diagnostics must never break the hook
+        pass
+
+
 def _has_cjk(text: str) -> bool:
     return any("一" <= ch <= "鿿" for ch in text)
 
@@ -342,12 +357,21 @@ def forward_event(
     *,
     lang_mode: str = "en",
     cancel_on_user_action: bool = True,
+    mute_subagent_events: bool = True,
 ) -> bool:
     """Forward an NDJSON event from `stream` to the unix socket at `sock_path`.
 
     `lang_mode` ("en" | "zh" | "auto") only affects AskUserQuestion translation.
     `cancel_on_user_action`: when False, UserPromptSubmit / PostToolUse hook
     payloads are dropped without contacting the daemon.
+    `mute_subagent_events`: when True, payloads fired from inside a subagent's
+    work (CC stamps those with both `agent_id` and `agent_type`) are dropped —
+    the subagent's tool calls, failures, and prompts stay silent while
+    main-session events speak. SubagentStart carries the same pair but is
+    exempt: it is a session-level lifecycle notice with its own notification
+    type, governed by the events allowlist instead. SubagentStop is *not*
+    exempt — it translates to the same `task_complete` as the main session's
+    Stop, so exempting it would announce "all done" once per finished subagent.
     When the `JARVIS_MUTE` env var is set (anything but ""/"0"/"false"), every
     event is dropped before the stream is read — the session is fully silent.
 
@@ -366,6 +390,25 @@ def forward_event(
         return False
 
     if not isinstance(payload, dict):
+        return False
+
+    if (
+        mute_subagent_events
+        # Both fields, not just `agent_id`: two corroborating markers make a
+        # silent global mute far less likely if a future CC build starts
+        # stamping one of them on main-session payloads too. Losing the mute
+        # (chatter returns) is a recoverable failure; losing every event is
+        # the multi-day silent-audio failure this project has hit before.
+        and payload.get("agent_id")
+        and payload.get("agent_type")
+        and payload.get("hook_event_name") != "SubagentStart"
+    ):
+        _hook_debug(
+            "dropped {} from subagent {} ({})",
+            payload.get("hook_event_name"),
+            payload.get("agent_id"),
+            payload.get("agent_type"),
+        )
         return False
 
     if (
@@ -525,6 +568,7 @@ def main() -> int:
         cfg = load_config(DEFAULT_CONFIG_PATH)
         mode = getattr(cfg.behavior, "voice_language", "en") or "en"
         cancel = getattr(cfg.behavior, "cancel_on_user_action", True)
+        mute_sub = getattr(cfg.behavior, "mute_subagent_events", True)
         # Read stdin once; feed both the (fire-and-forget) TTS path and the
         # (request/response) skills path. TTS first so a cancel reaches the
         # daemon before we spend the skill-query round-trip.
@@ -534,6 +578,7 @@ def main() -> int:
             cfg.paths.socket,
             lang_mode=mode,
             cancel_on_user_action=cancel,
+            mute_subagent_events=mute_sub,
         )
         maybe_inject_skills(raw, cfg)
     except Exception:  # noqa: BLE001 — structural guarantee
