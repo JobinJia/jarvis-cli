@@ -28,6 +28,25 @@ from typing import Any, Protocol
 from loguru import logger
 
 
+# Flipped when PortAudio wedges inside this process — a leaked release thread
+# (or a stuck device open) is parked on CoreAudio's HAL mutex, and every later
+# Pa_OpenStream would block forever behind it (observed 2026-07-17 and
+# 2026-08-15: days of silence each, with the daemon otherwise healthy). Once
+# true, open_pcm_sink routes around PortAudio entirely: ffplay is a separate
+# process with its own HAL state, so it keeps playing. Only a daemon restart
+# clears the wedge, so the flag never resets.
+_pcm_wedged = False
+
+
+def _mark_pcm_wedged(reason: str) -> None:
+    global _pcm_wedged
+    _pcm_wedged = True
+    logger.warning(
+        "pcm sink: {} — PortAudio is wedged in this process; all further "
+        "playback uses ffplay until the daemon restarts", reason,
+    )
+
+
 class Cancellable(Protocol):
     """What the daemon's cancel path needs from an in-flight playback handle:
     a synchronous kill that silences audio immediately. Satisfied structurally
@@ -180,6 +199,14 @@ class PCMPlayer:
     #: queue — the release can genuinely never return (see _release).
     RELEASE_TIMEOUT_SECONDS = 5.0
 
+    #: How long spawn() waits for the device to open. Opening normally takes
+    #: milliseconds; the only observed way past this is the HAL mutex held by
+    #: a leaked release thread, which blocks Pa_OpenStream forever — and with
+    #: it the worker coroutine, so the speech queue fills and every event is
+    #: dropped silently. A slow-but-honest open that trips this merely
+    #: downgrades playback to ffplay, which is the cheap side of the bet.
+    OPEN_TIMEOUT_SECONDS = 5.0
+
     def __init__(self, stream: Any, rate: int, channels: int) -> None:
         self._stream = stream  # a sounddevice.RawOutputStream (callback mode)
         self._rate = rate
@@ -214,9 +241,17 @@ class PCMPlayer:
         `open_pcm_sink` maps them to the ffplay fallback. The stream is NOT
         started here: it starts once the prebuffer fills (see feed) so the
         callback never begins by starving.
-        """
 
-        def _open() -> "PCMPlayer":
+        The open is bounded by OPEN_TIMEOUT_SECONDS: Pa_OpenStream can block
+        forever on a wedged HAL mutex, and an unbounded await here is exactly
+        how the daemon went silent for days. On timeout the process is marked
+        wedged (see _pcm_wedged) and this raises, so the caller falls back to
+        ffplay for this utterance and every one after it.
+        """
+        state_lock = threading.Lock()
+        state: dict[str, Any] = {"player": None, "abandoned": False}
+
+        def _open() -> "PCMPlayer | None":
             import sounddevice as sd  # noqa: PLC0415 — optional extra
 
             player_box: list[PCMPlayer] = []
@@ -249,9 +284,34 @@ class PCMPlayer:
             )
             player = cls(stream, rate, channels)
             player_box.append(player)
-            return player
+            with state_lock:
+                if not state["abandoned"]:
+                    state["player"] = player
+                    return player
+            # spawn() already timed out waiting for us: nobody will ever feed
+            # or close this stream. Release it right here — this thread is
+            # off the loop and disposable, exactly where a possibly-wedged
+            # release belongs.
+            player._release(abort=True)
+            return None
 
-        player = await asyncio.to_thread(_open)
+        try:
+            player = await asyncio.wait_for(
+                asyncio.to_thread(_open), cls.OPEN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            with state_lock:
+                state["abandoned"] = True
+                late = state["player"]
+            if late is not None:
+                # The open completed inside the timeout race window — release
+                # the never-used stream on its own dedicated thread.
+                late._start_release(abort=True)
+            _mark_pcm_wedged(
+                f"device open stuck past {cls.OPEN_TIMEOUT_SECONDS}s",
+            )
+            raise RuntimeError("pcm sink: device open stuck") from None
+        assert player is not None  # None only follows the abandoned path
         if on_spawn is not None:
             on_spawn(player)
         return player
@@ -311,9 +371,13 @@ class PCMPlayer:
     async def _join_release(self, thread: threading.Thread) -> None:
         await asyncio.to_thread(thread.join, self.RELEASE_TIMEOUT_SECONDS)
         if thread.is_alive():
-            logger.warning(
-                "pcm sink: device release stuck past {}s — leaking the "
-                "stream and moving on", self.RELEASE_TIMEOUT_SECONDS,
+            # The leaked thread may still hold CoreAudio's HAL mutex, and the
+            # next Pa_OpenStream would block forever behind it — trying again
+            # is how one leaked stream became 4.5 days of silence. Route all
+            # further playback around PortAudio instead.
+            _mark_pcm_wedged(
+                f"device release stuck past {self.RELEASE_TIMEOUT_SECONDS}s "
+                "— leaking the stream",
             )
 
     async def close(self) -> None:
@@ -398,6 +462,10 @@ async def open_pcm_sink(
     the provider's decode flags). Both expose feed/close/abort, so callers
     don't care which they got."""
     global _pcm_fallback_warned
+    if _pcm_wedged:
+        # PortAudio is dead in this process (see _mark_pcm_wedged) — go
+        # straight to ffplay, which lives in its own process and still plays.
+        return await StreamPlayer.spawn(input_args=input_args, on_spawn=on_spawn)
     try:
         return await PCMPlayer.spawn(rate=rate, channels=channels, on_spawn=on_spawn)
     except Exception as exc:  # ImportError or PortAudio init failure

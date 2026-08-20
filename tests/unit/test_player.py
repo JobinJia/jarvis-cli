@@ -539,11 +539,14 @@ async def test_pcm_player_kill_survives_wedged_device():
     wait). kill() fires on the daemon's cancel path — the event loop — so it
     must return immediately anyway, and close() must give up after
     RELEASE_TIMEOUT_SECONDS instead of freezing the speech queue with it."""
+    import jarvis_cli.player as player_mod
     from jarvis_cli.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     unwedge = threading.Event()
-    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
+    # The leak flips the process-wide wedge flag — keep that contained here.
+    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}), \
+            patch.object(player_mod, "_pcm_wedged", False):
         player = await PCMPlayer.spawn(rate=24000, channels=1)
         stream = created[0]
         stream.abort = unwedge.wait  # abort now blocks like the real deadlock
@@ -557,6 +560,85 @@ async def test_pcm_player_kill_survives_wedged_device():
 
     assert stream.closed is False  # release never got past the wedged abort
     unwedge.set()  # let the leaked release thread exit
+
+
+@pytest.mark.asyncio
+async def test_pcm_release_leak_wedges_process_and_open_pcm_sink_falls_back():
+    """The 2026-07-17 / 2026-08-15 regression: after close() leaks a stuck
+    release thread, that thread may still hold CoreAudio's HAL mutex — so the
+    NEXT Pa_OpenStream blocks forever and the speech queue silently fills for
+    days. Once a release leaks, open_pcm_sink must never touch PortAudio
+    again in this process: ffplay (its own process, its own HAL) still
+    plays."""
+    import jarvis_cli.player as player_mod
+    from jarvis_cli.player import PCMPlayer
+
+    created: list[_FakeRawStream] = []
+    unwedge = threading.Event()
+    fallback = object()
+
+    class _FakeStreamPlayer:
+        @classmethod
+        async def spawn(cls, *, input_args=None, on_spawn=None):
+            return fallback
+
+    with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}), \
+            patch.object(player_mod, "_pcm_wedged", False), \
+            patch("jarvis_cli.player.StreamPlayer", _FakeStreamPlayer):
+        player = await PCMPlayer.spawn(rate=24000, channels=1)
+        stream = created[0]
+        stream.abort = unwedge.wait  # release wedges like the real deadlock
+
+        player.kill()
+        with patch.object(PCMPlayer, "RELEASE_TIMEOUT_SECONDS", 0.2):
+            await player.close()  # bounded wait, leaks the release thread
+        assert player_mod._pcm_wedged is True
+
+        sink = await player_mod.open_pcm_sink(rate=24000, channels=1)
+
+    assert sink is fallback
+    assert len(created) == 1  # PortAudio was never opened again
+    unwedge.set()  # let the leaked release thread exit
+
+
+@pytest.mark.asyncio
+async def test_pcm_player_spawn_bounded_when_open_wedges():
+    """Pa_OpenStream itself can block forever on the wedged HAL mutex. spawn()
+    must give up after OPEN_TIMEOUT_SECONDS (raising so the caller falls back
+    to ffplay), mark the process wedged — and when the stuck open eventually
+    completes, release the never-used stream instead of leaking it open."""
+    import jarvis_cli.player as player_mod
+    from jarvis_cli.player import PCMPlayer
+
+    created: list[_FakeRawStream] = []
+    unwedge = threading.Event()
+    mod = types.ModuleType("sounddevice")
+
+    def _blocked_stream(**kwargs):
+        unwedge.wait()  # constructor blocks like Pa_OpenStream on the mutex
+        stream = _FakeRawStream(**kwargs)
+        created.append(stream)
+        return stream
+
+    mod.RawOutputStream = _blocked_stream
+    mod.PortAudioError = _FakePortAudioError
+
+    with patch.dict(sys.modules, {"sounddevice": mod}), \
+            patch.object(PCMPlayer, "OPEN_TIMEOUT_SECONDS", 0.2), \
+            patch.object(player_mod, "_pcm_wedged", False):
+        with pytest.raises(RuntimeError, match="open stuck"):
+            await PCMPlayer.spawn(rate=24000, channels=1)
+        assert player_mod._pcm_wedged is True
+
+        # The wedge clears later: the abandoned open must clean up after
+        # itself rather than leave an untracked open stream behind.
+        unwedge.set()
+        for _ in range(100):
+            if created and created[0].closed:
+                break
+            await asyncio.sleep(0.01)
+
+    assert created and created[0].aborted is True and created[0].closed is True
 
 
 @pytest.mark.asyncio
