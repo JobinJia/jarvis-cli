@@ -28,6 +28,30 @@ async def test_reload_behavior_swaps_behavior_in_place(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reload_behavior_pushes_weather_knobs_into_the_cache(tmp_path):
+    """The weather cache holds copies of its two knobs, so swapping
+    `.behavior` alone would leave them frozen at daemon-start values while
+    every neighbouring [behavior] field reloaded live."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        "[behavior.session_briefing]\n"
+        "weather_ttl_seconds = 900\n"
+        "weather_stale_max_age_seconds = 1800\n",
+        encoding="utf-8",
+    )
+
+    d = Daemon(Config(), config_path=cfg_file)
+    assert d._weather_cache.ttl == 600           # dataclass defaults
+    assert d._weather_cache.stale_max_age == 7200
+
+    reply = await d._on_query({"command": "reload_behavior"})
+
+    assert reply["ok"] is True
+    assert d._weather_cache.ttl == 900
+    assert d._weather_cache.stale_max_age == 1800
+
+
+@pytest.mark.asyncio
 async def test_reload_behavior_bad_config_is_reported_not_raised(tmp_path):
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("[behavior\nnot toml", encoding="utf-8")

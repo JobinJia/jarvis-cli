@@ -12,7 +12,6 @@ from jarvis_cli.briefing import (
     WeatherSnapshot,
     _clean_llm_output,
     _deg_to_compass,
-    _fetch_wttr,
     _format_date,
     _format_time,
     _format_weather,
@@ -161,6 +160,99 @@ async def test_weather_cache_caches_none_so_outages_dont_flood(
     await cache.get("Shanghai", timeout=1.0)
     await cache.get("Shanghai", timeout=1.0)
     assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_weather_cache_serves_stale_snapshot_when_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A network blip after a successful fetch serves the old snapshot
+    instead of None — slightly stale weather beats a time-only briefing."""
+    snap = WeatherSnapshot(
+        city="Shanghai", temp_c=22, condition="Clear", humidity=70,
+        wind_kph=10, wind_dir="E",
+    )
+    fake = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+
+    # ttl=0 forces a refetch every call; the second call's fetch fails.
+    cache = WeatherCache(ttl_seconds=0, stale_max_age_seconds=7200)
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+    fake.snap = None
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+    assert fake.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_weather_cache_stale_snapshot_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A last-good snapshot older than stale_max_age is NOT served."""
+    snap = WeatherSnapshot(
+        city="Shanghai", temp_c=22, condition="Clear", humidity=70,
+        wind_kph=10, wind_dir="E",
+    )
+    fake = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+
+    cache = WeatherCache(ttl_seconds=0, stale_max_age_seconds=0)
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+    fake.snap = None
+    assert await cache.get("Shanghai", timeout=1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_weather_cache_stale_age_survives_system_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Staleness is aged on the wall clock, not `time.monotonic()`: on macOS
+    the monotonic clock stops while the machine sleeps, so a laptop closed
+    overnight would otherwise wake and speak last night's weather as current."""
+    from jarvis_cli import briefing
+
+    snap = WeatherSnapshot(
+        city="Shanghai", temp_c=22, condition="Clear", humidity=70,
+        wind_kph=10, wind_dir="E",
+    )
+    fake = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+
+    wall = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(briefing.time, "time", lambda: wall["now"])
+
+    cache = WeatherCache(ttl_seconds=0, stale_max_age_seconds=7200)
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+
+    # Lid closed at 23:00, opened at 08:00: nine hours of wall time, while
+    # monotonic advanced by the handful of milliseconds this test took.
+    wall["now"] += 9 * 3600
+    fake.snap = None
+    assert await cache.get("Shanghai", timeout=1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_weather_cache_stale_fallback_applies_to_cached_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even when a None result is cached (TTL suppressing refetch), the
+    caller still gets the last good snapshot rather than the cached None."""
+    snap = WeatherSnapshot(
+        city="Shanghai", temp_c=22, condition="Clear", humidity=70,
+        wind_kph=10, wind_dir="E",
+    )
+    fake = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+
+    cache = WeatherCache(ttl_seconds=600, stale_max_age_seconds=7200)
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+
+    # Expire the TTL entry manually, then fail the next fetch → None cached.
+    cache._entries.clear()
+    fake.snap = None
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+    # The None is now the cached entry; stale fallback still kicks in.
+    assert await cache.get("Shanghai", timeout=1.0) is snap
+    assert fake.calls == 2, "cached None must still suppress refetching"
 
 
 # --- end-to-end composer ----------------------------------------------------
@@ -443,7 +535,7 @@ async def test_fetch_wttr_returns_none_on_http_error(
     assert await briefing._fetch_wttr("Shanghai", timeout=0.1) is None
 
 
-# --- multi-source weather (wttr.in → open-meteo fallback) -------------------
+# --- multi-source weather (open-meteo → wttr.in fallback) -------------------
 
 
 @pytest.mark.parametrize(
@@ -497,41 +589,123 @@ def test_parse_open_meteo_builds_snapshot() -> None:
     assert snap.wind_dir == "SW"  # 229° → SW
 
 
+class _FakeResponse:
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._data
+
+
+class _FakeGeoClient:
+    """Stands in for httpx.AsyncClient: records every request and answers the
+    geocoder only for the exact spelling open-meteo accepts."""
+
+    calls: list[tuple[str, dict]] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> "_FakeGeoClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def get(self, url: str, params: dict | None = None) -> _FakeResponse:
+        params = params or {}
+        type(self).calls.append((url, params))
+        if "geocoding" in url:
+            if params.get("name") != "New York":
+                # What the live API actually returns for "New_York":
+                # a body with no "results" key at all.
+                return _FakeResponse({"generationtime_ms": 0.49})
+            return _FakeResponse({
+                "results": [
+                    {"name": "New York", "latitude": 40.71, "longitude": -74.01},
+                ],
+            })
+        return _FakeResponse({
+            "current": {
+                "temperature_2m": 21.0,
+                "relative_humidity_2m": 55,
+                "weather_code": 0,
+                "wind_speed_10m": 9.0,
+                "wind_direction_10m": 180,
+            },
+        })
+
+
 @pytest.mark.asyncio
-async def test_fetch_weather_falls_back_to_open_meteo(
+async def test_fetch_open_meteo_normalizes_underscored_city(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """wttr.in failing falls through to open-meteo transparently."""
+    """`detect_city` returns the raw timezone tail, so "New_York" and friends
+    are the common case. open-meteo's geocoder finds nothing for those — the
+    underscore has to become a space or the primary source misses every time."""
+    from jarvis_cli import briefing
+
+    _FakeGeoClient.calls = []
+    monkeypatch.setattr(briefing.httpx, "AsyncClient", _FakeGeoClient)
+
+    snap = await briefing._fetch_open_meteo("New_York", timeout=1.0)
+
+    assert snap is not None
+    assert snap.city == "New York"
+    assert _FakeGeoClient.calls[0][1]["name"] == "New York"
+
+
+@pytest.mark.asyncio
+async def test_fetch_open_meteo_returns_none_when_geocode_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown place yields no results — return None so wttr.in gets a go."""
+    from jarvis_cli import briefing
+
+    _FakeGeoClient.calls = []
+    monkeypatch.setattr(briefing.httpx, "AsyncClient", _FakeGeoClient)
+
+    assert await briefing._fetch_open_meteo("Nowhereville", timeout=1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_weather_falls_back_to_wttr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """open-meteo failing falls through to wttr.in transparently."""
     snap = WeatherSnapshot(
         city="Chongqing", temp_c=18, condition="drizzle",
         humidity=90, wind_kph=14, wind_dir="SW",
     )
 
-    async def _wttr_fails(city: str, timeout: float) -> WeatherSnapshot | None:
+    async def _open_meteo_fails(city: str, timeout: float) -> WeatherSnapshot | None:
         return None
 
-    om = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", _wttr_fails)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", om)
+    wttr = _FakeFetch(snap)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", _open_meteo_fails)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", wttr)
 
     result = await fetch_weather("Chongqing", 3.0)
     assert result is snap
-    assert om.calls == 1
+    assert wttr.calls == 1
 
 
 @pytest.mark.asyncio
 async def test_fetch_weather_skips_backup_when_primary_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """wttr.in succeeding means open-meteo is never called — saves a request."""
+    """open-meteo succeeding means wttr.in is never called — saves a request."""
     snap = WeatherSnapshot(
         city="Chongqing", temp_c=20, condition="clear sky",
         humidity=50, wind_kph=5, wind_dir="N",
     )
     primary = _FakeFetch(snap)
     backup = _FakeFetch(None)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", primary)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", backup)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", primary)
+    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", backup)
 
     result = await fetch_weather("Chongqing", 3.0)
     assert result is snap

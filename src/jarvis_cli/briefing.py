@@ -1,16 +1,18 @@
 """Iron-Man-style opening briefing: greeting + time + weather.
 
 Composes the line spoken on `session_start` events. No LLM round-trip —
-the text is built from local clock + a wttr.in lookup, then handed
-straight to TTS via the daemon's existing `event.text` bypass.
+the text is built from local clock + a weather lookup (open-meteo,
+falling back to wttr.in), then handed straight to TTS via the daemon's
+existing `event.text` bypass.
 
 Design choices:
 - English only. The voice clone is English (Jarvis); reading Chinese
   with the cloned voice loses the identity. See feedback memory.
 - Weather is best-effort: a timeout, network error, or parse failure
-  degrades to a time-only line rather than failing the briefing.
+  degrades to a recent cached snapshot, then to a time-only line —
+  never fails the briefing.
 - Weather lookups are TTL-cached per-city so opening N sessions in a
-  burst hits wttr.in once, not N times.
+  burst hits the API once, not N times.
 """
 from __future__ import annotations
 
@@ -174,8 +176,9 @@ def detect_city() -> str:
     """Derive a queryable city name from `/etc/localtime`.
 
     macOS symlinks `/etc/localtime` into `…/zoneinfo/<Region>/<City>`;
-    we take the tail. Falls back to 'Shanghai' on any read error so we
-    always have *something* to hand to wttr.in.
+    we take the tail — underscores and all ("New_York"), so each source
+    normalizes for its own API. Falls back to 'Shanghai' on any read
+    error so we always have *something* to query with.
 
     We deliberately don't trust wttr.in's IP geolocation — VPNs throw
     it off (we've seen 'Tokyo' returned from a Shanghai connection
@@ -276,14 +279,19 @@ def _parse_open_meteo(
 async def _fetch_open_meteo(city: str, timeout: float) -> WeatherSnapshot | None:
     """open-meteo source: geocode the city to coordinates, then read its
     current conditions. Returns None on any failure."""
+    # `detect_city` hands us the raw timezone tail, so underscored names
+    # ("New_York", "Kuala_Lumpur") are the common case. wttr.in accepts
+    # those verbatim; open-meteo's geocoder returns zero results for them.
+    query = city.replace("_", " ")
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             geo = await client.get(
-                _OPEN_METEO_GEOCODE_URL, params={"name": city, "count": 1},
+                _OPEN_METEO_GEOCODE_URL, params={"name": query, "count": 1},
             )
             geo.raise_for_status()
             results = geo.json().get("results") or []
             if not results:
+                logger.warning("open-meteo geocode found no match for {!r}", query)
                 return None
             loc = results[0]
             fc = await client.get(
@@ -299,17 +307,18 @@ async def _fetch_open_meteo(city: str, timeout: float) -> WeatherSnapshot | None
                 },
             )
             fc.raise_for_status()
-            return _parse_open_meteo(fc.json(), loc, fallback_city=city)
+            return _parse_open_meteo(fc.json(), loc, fallback_city=query)
     except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
-        logger.warning("open-meteo fetch failed for {!r}: {}", city, exc)
+        logger.warning("open-meteo fetch failed for {!r}: {}", query, exc)
         return None
 
 
-# Sources tried in order; the first to return a snapshot wins. wttr.in first
-# (no geocoding round-trip needed), open-meteo as a robust fallback. Names, not
-# function objects, so `fetch_weather` resolves them at call time — keeps the
-# list monkeypatch-friendly in tests and trivial to extend with more sources.
-_WEATHER_SOURCES: tuple[str, ...] = ("_fetch_wttr", "_fetch_open_meteo")
+# Sources tried in order; the first to return a snapshot wins. open-meteo
+# first — commercial-grade infra, far fewer outages than the community-run
+# wttr.in, which stays on as fallback. Names, not function objects, so
+# `fetch_weather` resolves them at call time — keeps the list
+# monkeypatch-friendly in tests and trivial to extend with more sources.
+_WEATHER_SOURCES: tuple[str, ...] = ("_fetch_open_meteo", "_fetch_wttr")
 
 
 async def fetch_weather(city: str, timeout: float) -> WeatherSnapshot | None:
@@ -325,11 +334,21 @@ async def fetch_weather(city: str, timeout: float) -> WeatherSnapshot | None:
 
 class WeatherCache:
     """Per-city TTL cache with a fetch lock so simultaneous briefings
-    don't fan out into N parallel wttr.in calls."""
+    don't fan out into N parallel weather-API calls.
 
-    def __init__(self, ttl_seconds: int) -> None:
+    Also keeps the last *successful* snapshot per city: when a fresh
+    fetch fails (network blip, VPN switch — the dominant failure mode in
+    practice, where every source dies at once), a snapshot no older than
+    `stale_max_age_seconds` is served instead of None, so the briefing
+    speaks slightly stale weather rather than dropping it entirely.
+    """
+
+    def __init__(self, ttl_seconds: int, stale_max_age_seconds: int = 7200) -> None:
         self.ttl = ttl_seconds
+        self.stale_max_age = stale_max_age_seconds
         self._entries: dict[str, tuple[float, WeatherSnapshot | None]] = {}
+        # Wall clock, unlike `_entries` — see `_stale_fallback`.
+        self._last_good: dict[str, tuple[float, WeatherSnapshot]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _fresh(self, city: str, now: float) -> tuple[bool, WeatherSnapshot | None]:
@@ -338,21 +357,63 @@ class WeatherCache:
             return True, entry[1]
         return False, None
 
+    def _stale_fallback(
+        self, city: str, *, after_failed_fetch: bool,
+    ) -> WeatherSnapshot | None:
+        """Last good snapshot for `city`, if it is still young enough to speak.
+
+        Ages on the wall clock, not `time.monotonic()`: on macOS the monotonic
+        clock is `mach_absolute_time()`, which stops while the machine sleeps.
+        A laptop closed overnight would otherwise wake with a snapshot that
+        reads as seconds old and announce last night's weather as current.
+        """
+        entry = self._last_good.get(city)
+        if entry is None:
+            return None
+        age = time.time() - entry[0]
+        if age >= self.stale_max_age:
+            return None
+        if after_failed_fetch:
+            logger.info(
+                "weather fetch failed for {!r}; serving snapshot from {:.0f}s ago",
+                city, age,
+            )
+        else:
+            # No fetch was attempted — the TTL is still suppressing retries
+            # after an earlier failure. Debug level: during an outage this
+            # path fires on every briefing for the whole TTL window.
+            logger.debug(
+                "weather still cached as unavailable for {!r}; "
+                "serving snapshot from {:.0f}s ago",
+                city, age,
+            )
+        return entry[1]
+
     async def get(self, city: str, timeout: float) -> WeatherSnapshot | None:
         now = time.monotonic()
         ok, snap = self._fresh(city, now)
         if ok:
-            return snap
+            # A cached None still suppresses refetching for the TTL window,
+            # but the caller gets the last good snapshot if one is recent.
+            if snap is not None:
+                return snap
+            return self._stale_fallback(city, after_failed_fetch=False)
         lock = self._locks.setdefault(city, asyncio.Lock())
         async with lock:
             # Double-check after acquiring the lock — another coroutine
             # may have populated the cache while we were waiting.
-            ok, snap = self._fresh(city, time.monotonic())
+            now = time.monotonic()
+            ok, snap = self._fresh(city, now)
             if ok:
-                return snap
+                if snap is not None:
+                    return snap
+                return self._stale_fallback(city, after_failed_fetch=False)
             snap = await fetch_weather(city, timeout)
             self._entries[city] = (time.monotonic(), snap)
-            return snap
+            if snap is not None:
+                self._last_good[city] = (time.time(), snap)
+                return snap
+            return self._stale_fallback(city, after_failed_fetch=True)
 
 
 # --- offline template variants ---------------------------------------------

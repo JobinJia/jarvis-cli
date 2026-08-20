@@ -160,6 +160,9 @@ class Daemon:
         # (user-configurable; default 0 = announce every session_start).
         self._weather_cache = WeatherCache(
             ttl_seconds=cfg.behavior.session_briefing.weather_ttl_seconds,
+            stale_max_age_seconds=(
+                cfg.behavior.session_briefing.weather_stale_max_age_seconds
+            ),
         )
         self._last_briefing_at: float = 0.0
         # Shared embedding model for RAG retrieval (skills + MCP intent
@@ -312,6 +315,12 @@ class Daemon:
             logger.warning("reload_behavior failed: {}", exc)
             return {"ok": False, "error": str(exc)}
         self.cfg.behavior = fresh.behavior
+        # The weather cache is a separate object holding copies of its two
+        # knobs, so it needs an explicit push — without it those two would be
+        # the odd ones out in an otherwise live-reloadable [behavior] section.
+        briefing = fresh.behavior.session_briefing
+        self._weather_cache.ttl = briefing.weather_ttl_seconds
+        self._weather_cache.stale_max_age = briefing.weather_stale_max_age_seconds
         # Queue/dedup sizes are constructor-fixed; note them so a user who
         # edits those fields learns why nothing changed.
         logger.info(

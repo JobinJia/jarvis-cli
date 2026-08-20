@@ -640,6 +640,9 @@ def _render_configured_toml(choices: WizardChoices, *, preserve: dict | None = N
         enabled = true
         city = "{choices.city}"
         weather_ttl_seconds = 600
+        # When a fresh fetch fails, speak a previously fetched snapshot up to
+        # this old rather than dropping to a time-only line.
+        weather_stale_max_age_seconds = 7200
         min_interval_seconds = 0
         weather_timeout_seconds = 3.0
 

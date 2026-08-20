@@ -251,13 +251,18 @@ class SessionBriefingConfig:
     greeting + local time + weather, English voice, no LLM round-trip.
     """
     enabled: bool = True
-    # City queried against wttr.in. Empty = derive from timezone tail
-    # (`Asia/Shanghai` → "Shanghai"). Override to pin a location when
-    # the timezone is a continent root or you're abroad on a VPN.
+    # City queried against the weather sources. Empty = derive from
+    # timezone tail (`Asia/Shanghai` → "Shanghai"). Override to pin a
+    # location when the timezone is a continent root or you're abroad
+    # on a VPN.
     city: str = ""
     # How long a single weather lookup is reused across briefings — keeps
-    # us off wttr.in if you open ten sessions in two minutes.
+    # us off the weather APIs if you open ten sessions in two minutes.
     weather_ttl_seconds: int = 600
+    # When a fresh fetch fails (network blip, VPN switch), a previously
+    # fetched snapshot no older than this is spoken instead of dropping
+    # to a time-only line. Slightly stale weather beats none.
+    weather_stale_max_age_seconds: int = 7200
     # Floor between briefings. 0 = every session_start speaks. Bump up if
     # you open many tabs and find the chorus tiresome.
     min_interval_seconds: int = 0
