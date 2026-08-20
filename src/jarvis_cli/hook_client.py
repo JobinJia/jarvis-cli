@@ -74,6 +74,19 @@ def _has_cjk(text: str) -> bool:
     return any("一" <= ch <= "鿿" for ch in text)
 
 
+def _questions_have_cjk(questions: list) -> bool:
+    """CJK anywhere in the first question's text or option labels. Strict on
+    purpose: an English question with Chinese labels must not verbatim-render
+    into the English voice — it goes to the LLM for translation instead."""
+    first = questions[0]
+    if _has_cjk(first.get("question") or ""):
+        return True
+    for opt in first.get("options") or []:
+        if isinstance(opt, dict) and _has_cjk(opt.get("label") or ""):
+            return True
+    return False
+
+
 def _resolve_lang(mode: str, questions: list) -> str:
     """Pick output lang from the user's mode setting and question content."""
     if mode == "zh":
@@ -345,8 +358,26 @@ def _translate_cc_payload(payload: dict, lang_mode: str = "en") -> dict | None:
                 return None
             return {**base, "tool_input": {}, "text": text, "lang": lang}
 
-        # "en" / "zh" / unknown: forward verbatim questions so the daemon's
-        # phrase router can translate them into the configured voice_language.
+        # "en" / "zh": when the question is ALREADY in the target language,
+        # render verbatim here — no LLM round-trip. The LLM leg exists to
+        # translate; same-language "rephrasing" only adds its full latency
+        # (first audio 16-60s late in practice) and lets a small model merge
+        # or drop options. Only cross-language questions still go through
+        # the daemon's phrase router.
+        if lang_mode == "en" and not _questions_have_cjk(questions):
+            text = _render_askuserquestion(questions, "en")
+            if text:
+                return {**base, "tool_input": {}, "text": text, "lang": "en"}
+        elif lang_mode == "zh" and _has_cjk(
+            (questions[0].get("question") or "")
+        ):
+            text = _render_askuserquestion(questions, "zh")
+            if text:
+                return {**base, "tool_input": {}, "text": text, "lang": "zh"}
+
+        # Cross-language (or render failure): forward verbatim questions so
+        # the daemon's phrase router can translate them into the configured
+        # voice_language.
         return {**base, "tool_input": {"questions": questions}}
     return payload
 

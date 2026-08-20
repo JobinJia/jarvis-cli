@@ -320,6 +320,92 @@ def test_forward_event_zh_mode_forwards_raw_for_llm_translation(tmp_path: Path):
     assert "lang" not in line
 
 
+def test_forward_event_en_mode_renders_english_question_verbatim(tmp_path: Path):
+    """`en` mode + English question: no LLM round-trip — the hook renders
+    question + ALL options verbatim, so nothing is merged or dropped and
+    audio isn't 20-60s late (the window in which a cancel kills it)."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "Which fix should we apply?",
+                    "options": [
+                        {"label": "Skip the LLM"},
+                        {"label": "Exempt from cancel"},
+                        {"label": "Harden the prompt"},
+                    ],
+                }
+            ],
+        },
+        "cwd": "/x",
+        "session_id": "s1",
+    }
+
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path, lang_mode="en") is True
+    line = _recv_one(received)
+
+    assert line["lang"] == "en"
+    assert line["text"].startswith("Sir, ")
+    assert "Option one: Skip the LLM" in line["text"]
+    assert "Option two: Exempt from cancel" in line["text"]
+    assert "Option three: Harden the prompt" in line["text"]
+
+
+def test_forward_event_en_mode_chinese_label_still_goes_to_llm(tmp_path: Path):
+    """An English question with a CHINESE option label must NOT verbatim-render
+    into the English voice — it needs the LLM translation leg."""
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "Which theme?",
+                    "options": [{"label": "深色模式"}, {"label": "Light"}],
+                }
+            ],
+        },
+    }
+
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path, lang_mode="en") is True
+    line = _recv_one(received)
+
+    assert "text" not in line
+    assert "lang" not in line
+    assert line["tool_input"]["questions"][0]["question"] == "Which theme?"
+
+
+def test_forward_event_zh_mode_renders_chinese_question_verbatim(tmp_path: Path):
+    sock_path = tmp_path / "j.sock"
+    received = _start_unix_echo_server(sock_path)
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "选哪个方案",
+                    "options": [{"label": "方案甲"}, {"label": "方案乙"}],
+                }
+            ],
+        },
+    }
+
+    assert forward_event(io.StringIO(json.dumps(payload)), sock_path, lang_mode="zh") is True
+    line = _recv_one(received)
+
+    assert line["lang"] == "zh"
+    assert line["text"].startswith("先生，")
+    assert "选项一: 方案甲" in line["text"]
+    assert "选项二: 方案乙" in line["text"]
+
+
 def test_forward_event_auto_mode_renders_verbatim_for_cjk(tmp_path: Path):
     """`auto` mode keeps the no-LLM shortcut: CJK body → Chinese scaffolding
     + verbatim text, English body → English scaffolding + verbatim text."""

@@ -132,8 +132,11 @@ class PhraseRouter:
         # AskUserQuestion is intrinsically longer (question + up to 4 option
         # labels) than other events; give it more room than the default
         # phrase budget so the LLM can enumerate options without truncation.
+        # The extract caps input at ~360 chars (120 question + 4×60 labels);
+        # the enumeration scaffolding adds more, so the budget must exceed
+        # that or the model trims options to fit.
         if event.notification_type == "ask_user_question":
-            return 200, 400
+            return 320, 640
         return (
             self.cfg.behavior.phrase_target_chars,
             self.cfg.behavior.phrase_hard_cap,

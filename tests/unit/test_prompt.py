@@ -136,6 +136,21 @@ def test_build_messages_task_complete_biases_brief():
     assert "brief" in sys_msg.lower()
 
 
+def test_build_messages_ask_user_question_demands_full_enumeration():
+    msgs = build_messages(
+        _ev(notification_type="ask_user_question", tool_name="AskUserQuestion"),
+        lang="en", summary="ask: Pick a colour | options: Red; Blue; Green",
+        target_chars=320, hard_cap=640,
+    )
+    sys_msg = msgs[0]["content"]
+    assert "QUESTION" in sys_msg
+    assert "EVERY option" in sys_msg
+    # Must explicitly release the model from the one-sentence/length rules —
+    # otherwise a small model merges 4 options into a half-sentence paraphrase.
+    assert "overrides" in sys_msg
+    assert "Pick a colour" in msgs[-1]["content"]
+
+
 def test_build_messages_failure_and_complete_are_mutually_exclusive_clauses():
     fail = build_messages(
         _ev(notification_type="tool_failure"), lang="en", summary="",

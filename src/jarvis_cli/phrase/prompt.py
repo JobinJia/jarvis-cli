@@ -93,6 +93,19 @@ _FAILURE_CLAUSE = (
     "no banter, no jokes."
 )
 
+# Appended for ask_user_question: completeness beats brevity. Without this,
+# a small model obeys the system prompt's "ONE short sentence" and merges
+# 4 options into a half-sentence paraphrase — the user then never hears
+# what they're choosing between.
+_ASK_CLAUSE = (
+    " This is a QUESTION notice: Claude is asking the user to choose. "
+    "Enumerate EVERY option in the summary, in order, as 'option one: ..., "
+    "option two: ...' — never merge, drop, shorten, or summarise options. "
+    "Completeness overrides the one-sentence rule and the length target: "
+    "use as many words as the options require. Translate options faithfully "
+    "when the target language differs from theirs."
+)
+
 # Appended for task_complete: behavioral frame on top of the emotion clause.
 _COMPLETE_CLAUSE = (
     " This is a COMPLETION notice: Claude just finished responding. Reply with "
@@ -385,6 +398,8 @@ def build_messages(
     # layered on top of the emotion clause.
     if is_idle:
         sys += _IDLE_CLAUSE
+    elif event.notification_type == "ask_user_question":
+        sys += _ASK_CLAUSE
     elif event.notification_type == "tool_failure":
         sys += _FAILURE_CLAUSE
     elif event.notification_type == "task_complete":
