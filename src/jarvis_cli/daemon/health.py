@@ -52,7 +52,19 @@ class HealthServer:
                 hl = await reader.readline()
                 if hl in (b"\r\n", b"\n", b""):
                     break
-            if not line.startswith(b"GET /health"):
+            # The request-target may be origin-form ("/health") or
+            # absolute-form ("http://host:port/health") — the latter arrives
+            # whenever a client routes through a proxy, and macOS system
+            # proxy settings send even loopback httpx/urllib traffic that
+            # way. Parse the target instead of prefix-matching the line.
+            parts = line.split()
+            target = parts[1].decode("latin-1") if len(parts) >= 2 else ""
+            if "://" in target:
+                after_scheme = target.index("://") + 3
+                slash = target.find("/", after_scheme)
+                target = target[slash:] if slash != -1 else "/"
+            path = target.split("?", 1)[0]
+            if not line.startswith(b"GET ") or path != "/health":
                 writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
