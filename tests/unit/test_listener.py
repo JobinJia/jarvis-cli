@@ -185,3 +185,163 @@ async def test_serve_unix_socket_ignores_cancel_without_session_id(tmp_path: Pat
         pass
 
     assert cancels == []
+
+
+@pytest.mark.asyncio
+async def test_reply_write_survives_vanished_client(tmp_path: Path):
+    """A hook that timed out and exited leaves drain() raising
+    ConnectionResetError. Regression for the 20 tracebacks asyncio's default
+    handler dumped into the daemon log in 13h on 2026-08-25."""
+    sock_path = tmp_path / "j.sock"
+    unhandled: list[dict] = []
+    asyncio.get_running_loop().set_exception_handler(
+        lambda loop, ctx: unhandled.append(ctx)
+    )
+    events: list[Event] = []
+    holder: dict[str, socket.socket] = {}
+
+    async def on_event(ev: Event):
+        events.append(ev)
+
+    async def on_query(payload: dict) -> dict:
+        # The client gives up while the daemon is still composing the reply.
+        holder["sock"].close()
+        await asyncio.sleep(0.05)
+        # Big enough that drain() actually has to flush to the dead peer.
+        return {"context": "x" * 2_000_000}
+
+    server_task = asyncio.create_task(
+        serve_unix_socket(sock_path, on_event, on_query=on_query)
+    )
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert sock_path.exists()
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(str(sock_path))
+    holder["sock"] = s
+    s.sendall((json.dumps({"command": "skill_query", "text": "hi"}) + "\n").encode())
+
+    await asyncio.sleep(0.3)
+
+    # The listener must still be serving after the failed write.
+    s2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s2.connect(str(sock_path))
+    s2.sendall(
+        (json.dumps({"notification_type": "idle_prompt", "tool_name": None}) + "\n").encode()
+    )
+    s2.close()
+    await asyncio.sleep(0.1)
+
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert unhandled == []
+    assert [ev.notification_type for ev in events] == ["idle_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_serve_unix_socket_reassembles_split_query(tmp_path: Path):
+    """A request larger than one segment used to reach the parser truncated and
+    be dropped as malformed JSON (2026-08-25 14:16:45, a skill_query carrying a
+    <task-notification> block)."""
+    sock_path = tmp_path / "j.sock"
+    seen: list[dict] = []
+
+    async def on_event(ev: Event): pass
+
+    async def on_query(payload: dict) -> dict:
+        seen.append(payload)
+        return {"context": "BODY"}
+
+    server_task = asyncio.create_task(
+        serve_unix_socket(sock_path, on_event, on_query=on_query)
+    )
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert sock_path.exists()
+
+    text = "<task-notification>" + "y" * 200_000 + "</task-notification>"
+    raw = (json.dumps({"command": "skill_query", "text": text}) + "\n").encode()
+    reader, writer = await asyncio.open_unix_connection(str(sock_path))
+    for i in range(0, len(raw), 8192):
+        writer.write(raw[i:i + 8192])
+        await writer.drain()
+        await asyncio.sleep(0)
+    reply = json.loads((await reader.readline()).decode())
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert reply == {"context": "BODY"}
+    assert len(seen) == 1
+    assert seen[0]["text"] == text
+
+
+@pytest.mark.asyncio
+async def test_serve_unix_socket_reassembles_split_event(tmp_path: Path):
+    """Same reassembly on the fire-and-forget event path."""
+    sock_path = tmp_path / "j.sock"
+    received: list[Event] = []
+
+    async def on_event(ev: Event):
+        received.append(ev)
+
+    server_task = asyncio.create_task(serve_unix_socket(sock_path, on_event))
+    for _ in range(50):
+        if sock_path.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert sock_path.exists()
+
+    raw = (
+        json.dumps(
+            {
+                "notification_type": "permission_prompt",
+                "tool_name": "Bash",
+                "tool_input": {"command": "z" * 100_000},
+            }
+        )
+        + "\n"
+    ).encode()
+    # asyncio streams, not a blocking socket: a payload this size exceeds the
+    # unix-socket buffer, and sendall() from the event-loop thread would wedge
+    # against the server reading on that same loop.
+    _, writer = await asyncio.open_unix_connection(str(sock_path))
+    half = len(raw) // 2
+    writer.write(raw[:half])
+    await writer.drain()
+    await asyncio.sleep(0.05)
+    writer.write(raw[half:])
+    await writer.drain()
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+
+    await asyncio.sleep(0.2)
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(received) == 1
+    assert received[0].tool_name == "Bash"
+    assert received[0].tool_input["command"] == "z" * 100_000

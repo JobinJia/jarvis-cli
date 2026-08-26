@@ -15,6 +15,13 @@ from ..types import Event, NotificationType
 
 _ALLOWED_TYPES: set[str] = set(get_args(NotificationType))
 
+# Per-connection read buffer. asyncio's default is 64 KiB, which is under what
+# a real request carries: a `skill_query` forwards the user's whole prompt, and
+# those routinely include pasted files or a <task-notification> block. Over the
+# limit `readline()` raises, so the ceiling has to be generous — 1 MiB — while
+# still capping how much one connection can make the daemon buffer.
+_READ_LIMIT = 1024 * 1024
+
 
 def parse_payload(raw: str) -> Event | None:
     """Parse a single NDJSON line into a normalized Event, or None on bad data."""
@@ -68,8 +75,41 @@ async def serve_unix_socket(
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            data = await reader.read(65536)
-            for line in data.decode("utf-8", errors="replace").splitlines():
+            # One `reader.read(65536)` was refuted 2026-08-25: read() returns
+            # whatever has arrived so far, so a request split across segments
+            # reached the parser as a truncated fragment and was dropped with
+            # only a "Dropped malformed JSON" warning (a skill_query carrying a
+            # <task-notification> block died that way at 14:16:45). readline()
+            # waits for the delimiter instead. Reading to EOF would be simpler
+            # but deadlocks the query path: hook_client._request_reply sends its
+            # line and then blocks on recv() without half-closing, so EOF only
+            # arrives after we have already written the reply.
+            while True:
+                try:
+                    raw = await reader.readline()
+                except ValueError:
+                    # Line over _READ_LIMIT. Resuming the loop is NOT safe:
+                    # readline() drops only what it had buffered when it gave
+                    # up, so the tail of that same line would come back as the
+                    # next "line" and be reported a second time as malformed
+                    # JSON — one bad request, two confusing warnings. Every
+                    # client in this repo sends exactly one request per
+                    # connection (and the pre-2026-08-25 handler read once and
+                    # closed), so an over-long line means this connection's
+                    # request is already lost: say so once and drop it, rather
+                    # than resynchronising on a delimiter no one will send.
+                    logger.warning(
+                        "Dropped over-long request (> {} bytes); closing "
+                        "connection", _READ_LIMIT,
+                    )
+                    break
+                except OSError as exc:
+                    # Client vanished mid-request; nothing left to read.
+                    logger.debug("Read aborted, client gone: {}", exc)
+                    break
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if not line.strip():
                     continue
                 try:
@@ -92,10 +132,22 @@ async def serve_unix_socket(
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("skill_query handler failed: {}", exc)
                             reply = {}
-                        writer.write(
-                            (json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8")
-                        )
-                        await writer.drain()
+                        try:
+                            writer.write(
+                                (json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8")
+                            )
+                            await writer.drain()
+                        except OSError as exc:
+                            # ConnectionResetError / BrokenPipeError: the hook
+                            # already timed out or its session exited, so there
+                            # is nobody to reply to. An expected outcome, not a
+                            # fault — but unhandled it escaped the connection
+                            # callback and asyncio dumped a full traceback into
+                            # the daemon log (20 of them in 13h on 2026-08-25),
+                            # burying real faults. Same OSError suppression the
+                            # wait_closed() below already uses.
+                            logger.debug("Reply dropped, client gone: {}", exc)
+                            break
                     continue
                 ev = parse_payload(line)
                 if ev is None:
@@ -114,7 +166,9 @@ async def serve_unix_socket(
             except OSError:
                 pass
 
-    server = await asyncio.start_unix_server(handle, path=str(sock_path))
+    server = await asyncio.start_unix_server(
+        handle, path=str(sock_path), limit=_READ_LIMIT,
+    )
     os.chmod(sock_path, 0o600)
     logger.info("Listener bound to {}", sock_path)
     try:
