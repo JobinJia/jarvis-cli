@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import sys
 import tempfile
@@ -30,22 +31,34 @@ from ..player import (
     Cancellable,
     PCMPlayer,
     StreamPlayer,
+    on_pcm_wedge,
     open_pcm_sink,
+    pcm_sink_unusable,
     play,
     play_stream,
 )
 from ..tts.engine import TTSEngine
+from ..tts.factory import HEAVY_PROVIDERS, make_provider
 from ..tts.providers.base import TTSProvider
-from ..tts.providers.cosyvoice import CosyVoiceProvider
-from ..tts.providers.elevenlabs import ElevenLabsProvider
-from ..tts.providers.piper import PiperProvider
 from ..tts.providers.say import SayProvider
-from ..tts.providers.xtts import XTTSProvider
+from ..tts.worker_client import WorkerProvider
 from ..types import Event, Lang, emotion_for
 from .dedup import DedupWindow
 from .health import HealthServer
 from .listener import serve_unix_socket
 from .queue import BoundedEventQueue
+
+
+#: How long this process must have been up before a PortAudio wedge is allowed
+#: to restart it (see Daemon._self_heal_if_wedged). Any real wedge so far took
+#: hours of healthy playback to develop; anything faster is more likely a
+#: device that cannot be opened at all, and restarting into that is a loop.
+_SELF_HEAL_MIN_UPTIME_SECONDS = 600.0
+
+#: How long the self-heal exit waits for detached webhook/ntfy pushes to
+#: finish before killing the process. Long enough for a normal ntfy POST,
+#: short enough that a hung one cannot hold the recovery hostage.
+_SELF_HEAL_PUSH_DRAIN_SECONDS = 5.0
 
 
 def _make_phrase_provider(name: str, cfg: Config) -> PhraseProvider | None:
@@ -65,20 +78,21 @@ def _make_phrase_provider(name: str, cfg: Config) -> PhraseProvider | None:
     return factory()
 
 
-def _make_tts_provider(name: str, cfg: Config) -> TTSProvider | None:
-    factories = {
-        "xtts": lambda: XTTSProvider(cfg.tts.xtts),
-        "cosyvoice": lambda: CosyVoiceProvider(cfg.tts.cosyvoice),
-        "piper": lambda: PiperProvider(cfg.tts.piper),
-        "elevenlabs": lambda: ElevenLabsProvider(cfg.tts.elevenlabs),
-        "say": lambda: SayProvider(),
-    }
-    factory = factories.get(name)
-    if factory is None:
-        if name:
-            logger.warning("Unknown TTS provider {!r}; skipping in chain", name)
-        return None
-    return factory()
+def _make_tts_provider(
+    name: str, cfg: Config, config_path: str | Path = DEFAULT_CONFIG_PATH,
+) -> TTSProvider | None:
+    """Build a provider, putting the memory-hungry ones behind a worker child.
+
+    The wrapper satisfies the same TTSProvider interface, so every caller —
+    sink selection, streaming, the synth+afplay fallback — is unaware of which
+    process the model actually lives in. See tts.worker for why the heavy ones
+    are isolated at all.
+    """
+    if cfg.tts.worker_process and name in HEAVY_PROVIDERS:
+        return WorkerProvider(
+            name, config_path, max_syntheses=cfg.tts.worker_max_syntheses,
+        )
+    return make_provider(name, cfg)
 
 
 class Daemon:
@@ -110,11 +124,14 @@ class Daemon:
             cfg=cfg,
             on_primary_fallback=self._announce_phrase_fallback,
         )
-        primary_tts = _make_tts_provider(cfg.tts.provider, cfg) or SayProvider()
-        fallback_tts = _make_tts_provider(cfg.tts.fallback, cfg)
+        primary_tts = (
+            _make_tts_provider(cfg.tts.provider, cfg, config_path)
+            or SayProvider()
+        )
+        fallback_tts = _make_tts_provider(cfg.tts.fallback, cfg, config_path)
         overrides: dict[str, TTSProvider] = {}
         if cfg.tts.provider_zh and cfg.tts.provider_zh != cfg.tts.provider:
-            zh_tts = _make_tts_provider(cfg.tts.provider_zh, cfg)
+            zh_tts = _make_tts_provider(cfg.tts.provider_zh, cfg, config_path)
             if zh_tts is not None:
                 overrides["zh"] = zh_tts
         self.tts = TTSEngine(
@@ -126,6 +143,13 @@ class Daemon:
             state_getter=self._snapshot,
         )
         self._last_text: str | None = None
+        # PortAudio self-heal state: the reason recorded by the wedge callback,
+        # and whether the worker has already ruled on it. See
+        # _self_heal_if_wedged.
+        self._started_at = time.monotonic()
+        self._wedge_reason: str | None = None
+        self._self_heal_checked = False
+        on_pcm_wedge(self._note_pcm_wedge)
         # Keep strong refs to in-flight webhook tasks so they aren't garbage
         # collected mid-flight (asyncio only holds weak refs to tasks).
         self._webhook_tasks: set[asyncio.Task] = set()
@@ -510,6 +534,10 @@ class Daemon:
             # Usually already done — playback outlasts phrasing. Awaiting
             # keeps the task lifecycle clean (no orphans, errors surface).
             await prefetch_task
+            # Idle point: the queue is drained and nothing is playing, so
+            # this is where housekeeping that costs a pause belongs.
+            await self.tts.recycle_worn_workers()
+            await self._self_heal_if_wedged()
 
     async def _process_one(self, event: Event) -> None:
         sid = event.session_id
@@ -711,7 +739,9 @@ class Daemon:
                 # provider (tts.provider_zh) may not stream — those sentences
                 # take the file-synth path below.
                 primary = self.tts.primary_for(lang)
-                if primary.supports_streaming:
+                if primary.supports_streaming and not self._streams_into_ffplay(
+                    primary,
+                ):
                     try:
                         if session is None:
                             session = await self._spawn_stream_sink(
@@ -744,6 +774,19 @@ class Daemon:
                             session = None
                 if cancellable and sid and sid in self._cancelled_sessions:
                     break
+                # Reaching the file path with a live sink still open means the
+                # streaming decision flipped mid-utterance (the PCM sink went
+                # away while sentence N-1 was in flight, so _streams_into_ffplay
+                # now says no). Play out what that sink already holds before
+                # starting afplay: otherwise the two overlap into a double
+                # voice, and _register below would rebind _current_proc to the
+                # afplay handle, leaving the sink uncancellable.
+                if session is not None:
+                    try:
+                        await session.close()
+                    except Exception as exc:  # noqa: BLE001 — cleanup path
+                        logger.debug("stream session close failed: {}", exc)
+                    session = None
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     out_path = Path(tmp.name)
                 await self.tts.synthesize(
@@ -907,20 +950,100 @@ class Daemon:
         container-format providers (MP3 from ElevenLabs) keep ffplay, the only
         decoder we have for those bytes.
 
-        The PCM sink is additionally gated behind `tts.pcm_playback` (default
-        off): with synthesis slower than realtime it underruns audibly, while
-        ffplay buffers through the stalls — see TTSConfig for the full story.
+        The PCM sink is additionally gated behind `tts.pcm_playback` (on by
+        default since 2026-08-25) — see TTSConfig. Callers must check
+        `_streams_into_ffplay` first: a raw-PCM provider that would land on
+        ffplay must not stream at all. `open_pcm_sink` RAISES rather than
+        degrading to ffplay, and both callers turn that into the same
+        synth+afplay fallback, so a device that fails to open never
+        silently lands us back on the pipe that truncates.
         """
         if primary.stream_pcm is not None and self.cfg.tts.pcm_playback:
             rate, channels = primary.stream_pcm
             return await open_pcm_sink(
-                rate=rate, channels=channels,
-                input_args=primary.stream_input_args,
-                on_spawn=on_spawn,
+                rate=rate, channels=channels, on_spawn=on_spawn,
             )
         return await StreamPlayer.spawn(
             input_args=primary.stream_input_args, on_spawn=on_spawn,
         )
+
+    def _note_pcm_wedge(self, reason: str) -> None:
+        """`player.on_pcm_wedge` handler. Fires on the event loop, in the
+        middle of the utterance that hit the wedge, so it only records —
+        the worker decides what to do once the queue is idle."""
+        if self._wedge_reason is None:
+            self._wedge_reason = reason
+
+    async def _self_heal_if_wedged(self) -> None:
+        """Restart the process when PortAudio has wedged and the queue is idle.
+
+        Nothing in-process can undo a wedge: the leaked release thread holds
+        CoreAudio's HAL mutex for as long as the process lives. Before
+        2026-08-25 the only signal was a single WARNING line, so the daemon
+        just stayed degraded until someone noticed by ear — 75 minutes, that
+        time. launchd's KeepAlive respawns us, and the new process gets a
+        clean PortAudio.
+
+        Called last in the worker loop, with the queue drained and nothing
+        playing, so no utterance is ever cut off mid-word. The uptime floor is
+        the loop guard: a machine whose audio device wedges on every open
+        would otherwise respawn forever. Below the floor we stay up and
+        degraded, which since the same date means synth+afplay — slower to
+        first sound, but complete and intelligible.
+        """
+        if self._wedge_reason is None or self._self_heal_checked:
+            return
+        if self.queue.size > 0:
+            return  # still backed up; decide at the next idle moment
+        self._self_heal_checked = True
+        uptime = time.monotonic() - self._started_at
+        if uptime < _SELF_HEAL_MIN_UPTIME_SECONDS:
+            logger.warning(
+                "pcm sink: wedged {:.0f}s into this process ({}) — below the "
+                "{:.0f}s self-heal floor, staying up on synth+afplay",
+                uptime, self._wedge_reason, _SELF_HEAL_MIN_UPTIME_SECONDS,
+            )
+            return
+        logger.warning(
+            "pcm sink: wedged ({}) — exiting to recover PortAudio; launchd "
+            "KeepAlive respawns us (up {:.0f}s, queue idle)",
+            self._wedge_reason, uptime,
+        )
+        # An empty queue does not mean nothing is in flight: webhook and ntfy
+        # pushes are detached tasks that deliberately outlive playback, and the
+        # actionable ones carry the Approve/Deny buttons. os._exit takes no
+        # atexit hooks and cancels nothing, so a POST still on the wire would
+        # simply vanish. Bounded — a hung push must not block the recovery it
+        # is riding along with.
+        if self._webhook_tasks:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*self._webhook_tasks, return_exceptions=True),
+                    _SELF_HEAL_PUSH_DRAIN_SECONDS,
+                )
+        sys.stderr.flush()
+        os._exit(1)
+
+    def _streams_into_ffplay(self, primary: TTSProvider) -> bool:
+        """Would this provider's stream end up in ffplay's stdin pipe?
+
+        True means DON'T stream it. ffplay paces playback off a clock that
+        keeps running while its pipe is dry, so a producer that stalls loses
+        the audio it hands over afterwards — the stall is charged against the
+        utterance and ffplay exits early, rc=0, stderr empty (measured
+        2026-08-25; see player.pcm_sink_unusable for the numbers). Every
+        local PCM provider stalls that way, because each piece is decoded in
+        full before a single byte is handed over (xtts.stream) at rtf ~1.2.
+        The jitter-buffered PCM sink is immune — it pads with silence and
+        never advances a clock — so streaming is fine whenever it's available.
+
+        Container-format providers (ElevenLabs MP3) are exempt: ffplay is the
+        only decoder we have for those bytes, and they arrive from the network
+        in a steady trickle rather than one blob per sentence.
+        """
+        if primary.stream_pcm is None:
+            return False
+        return pcm_sink_unusable() or not self.cfg.tts.pcm_playback
 
     async def _try_stream(
         self, text: str, lang, voice_id: str | None,
@@ -941,6 +1064,13 @@ class Daemon:
         """
         primary = self.tts.primary_for(lang)
         if not primary.supports_streaming:
+            return False
+        if self._streams_into_ffplay(primary):
+            # Streaming would truncate the line — take the synth+afplay path.
+            logger.debug(
+                "SKIP-STREAM {} would stream into ffplay; using synth+afplay",
+                primary.name,
+            )
             return False
         try:
             chunks = primary.stream(text, lang, voice_id=voice_id, emotion=emotion)
@@ -995,15 +1125,66 @@ class Daemon:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("mcp: prewarm failed ({})", exc)
 
+    def _tts_prewarm_plan(
+        self,
+    ) -> tuple[list[TTSProvider], list[tuple[TTSProvider, str]]]:
+        """Split the configured TTS providers into (warm now, load lazily).
+
+        Why not just warm every provider we can see: a language override the
+        current config can never route to still pays its full model load at
+        every daemon start and then sits resident forever. Measured on the
+        live daemon 2026-08-25 with behavior.voice_language = "en" and
+        tts.provider_zh = "cosyvoice": CosyVoice3 loaded 4.7GB of weights at
+        02:28:33 and ran ZERO syntheses in the following 13 hours, while the
+        box sat at 97% swap and synthesis RTF degraded from ~1.2 to a median
+        of 4.7 as the weights we DO use got paged out.
+
+        Deferral is safe: every provider's model load is lazy at synthesis
+        time (CosyVoiceProvider._load_model is called from _synth_once, XTTS's
+        from synthesize/stream), so a deferred provider still speaks — its
+        first call just pays the load prewarm would have hidden.
+
+        Reachability follows the real lang branches in _process_one /
+        _process_one_streaming, not the config alone:
+        - the primary is ALWAYS warmed: pre-baked events fall back to "en"
+          (`event.lang or "en"`) and the session_start briefing always
+          composes in English, so it is reachable whatever the setting says;
+        - a pinned voice_language ("en"/"zh") is used verbatim on the LLM
+          path, so only that language's override can be selected;
+        - "auto" resolves per event via detect_for(cwd), so every override is
+          genuinely reachable and all of them are warmed.
+
+        An override for a language the setting never picks is reachable only
+        through an explicitly pre-baked event (`jarvis-cli say --lang zh`) —
+        rare enough to pay the cold start on.
+        """
+        voice_lang = self.cfg.behavior.voice_language
+        warm: dict[TTSProvider, None] = {self.tts.primary: None}
+        reasons: dict[TTSProvider, str] = {}
+        for lang, provider in self.tts.overrides.items():
+            if voice_lang == "auto" or lang == voice_lang:
+                warm[provider] = None
+            else:
+                reasons.setdefault(
+                    provider,
+                    f"behavior.voice_language={voice_lang!r} never routes to "
+                    f"{lang!r}; loads on first use",
+                )
+        deferred = [(p, why) for p, why in reasons.items() if p not in warm]
+        return list(warm), deferred
+
     async def _prewarm_tts(self) -> None:
-        """Let the primary provider warm its one-off state at daemon start so
-        the user's first notification doesn't eat the cold path. Each provider
-        knows what (if anything) it needs to warm — XTTS loads the model and
-        conditioning latents; API/subprocess providers are no-ops. Best-effort:
-        any failure just defers the cost to the first real event."""
-        for provider in dict.fromkeys(
-            (self.tts.primary, *self.tts.overrides.values()),
-        ):
+        """Let the providers this config can actually select warm their one-off
+        state at daemon start so the user's first notification doesn't eat the
+        cold path. Each provider knows what (if anything) it needs to warm —
+        XTTS loads the model and conditioning latents; API/subprocess providers
+        are no-ops. Providers the config can never route to are left to load
+        lazily on their first real synthesis (see _tts_prewarm_plan).
+        Best-effort: any failure just defers the cost to the first real event."""
+        warm, deferred = self._tts_prewarm_plan()
+        for provider, why in deferred:
+            logger.info("tts: prewarm deferred ({}) — {}", provider.name, why)
+        for provider in warm:
             try:
                 await provider.prewarm()
                 logger.info("tts: prewarm ready ({})", provider.name)
@@ -1055,6 +1236,10 @@ class Daemon:
                     await t
                 except asyncio.CancelledError:
                     pass
+            # Worker children outlive their parent's event loop unless told
+            # otherwise — an orphaned one keeps a multi-GB model resident with
+            # nobody to talk to.
+            await self.tts.aclose()
             await self.health.stop()
 
 

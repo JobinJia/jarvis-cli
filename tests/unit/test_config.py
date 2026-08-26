@@ -21,9 +21,11 @@ def test_load_config_returns_defaults_when_file_missing(tmp_path: Path):
     assert cfg.llm.provider == "deepseek"
     assert cfg.llm.fallback == "ollama"
     assert cfg.tts.provider == "xtts"
-    # 20, not lower: chunk=10 measured strictly worse on MPS (first chunk
-    # 4.16s vs 0.58s, RTF 2.23 vs 0.76 → mid-utterance stutter).
-    assert cfg.tts.xtts.stream_chunk_size == 20
+    # Bounds PyTorch's MPS allocator, which otherwise grows to fill free RAM
+    # and never gives it back — 13 GB after a day, 23.5 GB for one long line.
+    # The batch decode path holds 0.2; the old streaming path OOMed there and
+    # drops to the `say` voice. See XTTSConfig for the full measurement.
+    assert cfg.tts.xtts.mps_memory_ratio == 0.2
     assert cfg.behavior.dedup_window_seconds == 10
     assert cfg.behavior.queue_max_size == 5
     assert cfg.behavior.voice_language == "en"

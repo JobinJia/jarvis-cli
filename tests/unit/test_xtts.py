@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -245,16 +246,10 @@ async def test_xtts_stream_yields_pcm_chunks(tmp_path: Path):
     # Same byte stream described for the in-process sounddevice sink.
     assert p.stream_pcm == (24000, 1)
 
-    class _Chunk:
-        def __init__(self, arr): self._arr = arr
-        def detach(self): return self
-        def cpu(self): return self
-        def numpy(self): return self._arr
-
     fake_model = MagicMock()
-    fake_model.synthesizer.tts_model.inference_stream.return_value = iter(
-        [_Chunk(np.array([0.0, 1.0, -1.0], dtype=np.float32))]
-    )
+    fake_model.synthesizer.tts_model.inference.return_value = {
+        "wav": np.array([0.0, 1.0, -1.0], dtype=np.float32)
+    }
 
     with patch.object(p, "_load_model", return_value=fake_model), \
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
@@ -266,13 +261,12 @@ async def test_xtts_stream_yields_pcm_chunks(tmp_path: Path):
     assert chunks[0] == bytes(2 * int(24000 * 0.25))
     # 3 float samples → 3 int16 → 6 bytes; 1.0 → 32767, -1.0 → -32767.
     assert chunks[1] == np.array([0, 32767, -32767], dtype=np.int16).tobytes()
-    kwargs = fake_model.synthesizer.tts_model.inference_stream.call_args.kwargs
+    kwargs = fake_model.synthesizer.tts_model.inference.call_args.kwargs
     assert kwargs["language"] == "en"
     assert kwargs["gpt_cond_latent"] == "g"
     assert kwargs["speaker_embedding"] == "s"
     # Config value passes through verbatim (20 on MPS — see XTTSConfig for
     # the measured chunk-size trade-off).
-    assert kwargs["stream_chunk_size"] == 20
     # No emotion → prosody untouched: base short-text speed, base temperature.
     assert kwargs["speed"] == pytest.approx(cfg.speed_short)
     assert kwargs["temperature"] == pytest.approx(cfg.temperature)
@@ -294,22 +288,17 @@ async def test_xtts_stream_emotion_shapes_prosody(tmp_path: Path):
     )
     p = XTTSProvider(cfg)
 
-    class _Chunk:
-        def __init__(self, arr): self._arr = arr
-        def detach(self): return self
-        def cpu(self): return self
-        def numpy(self): return self._arr
 
     fake_model = MagicMock()
-    fake_model.synthesizer.tts_model.inference_stream.return_value = iter(
-        [_Chunk(np.zeros(3, dtype=np.float32))]
-    )
+    fake_model.synthesizer.tts_model.inference.return_value = {
+        "wav": np.zeros(3, dtype=np.float32)
+    }
 
     with patch.object(p, "_load_model", return_value=fake_model), \
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
         _ = [c async for c in p.stream("All done, sir.", lang="en", emotion="pleased")]
 
-    kwargs = fake_model.synthesizer.tts_model.inference_stream.call_args.kwargs
+    kwargs = fake_model.synthesizer.tts_model.inference.call_args.kwargs
     # pleased → (×1.05, +0.08) on top of the short-text base speed.
     assert kwargs["speed"] == pytest.approx(cfg.speed_short * 1.05)
     assert kwargs["temperature"] == pytest.approx(
@@ -330,7 +319,7 @@ async def test_xtts_stream_propagates_inference_error(tmp_path: Path):
     )
     p = XTTSProvider(cfg)
     fake_model = MagicMock()
-    fake_model.synthesizer.tts_model.inference_stream.side_effect = RuntimeError("boom")
+    fake_model.synthesizer.tts_model.inference.side_effect = RuntimeError("boom")
 
     with patch.object(p, "_load_model", return_value=fake_model), \
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
@@ -374,7 +363,7 @@ def test_split_for_gpt_hard_splits_single_overlong_sentence():
 
 @pytest.mark.asyncio
 async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
-    """A long text must drive one inference_stream call per split piece —
+    """A long text must drive one inference call per split piece —
     feeding it whole is exactly the silent-truncation bug."""
     import numpy as np
 
@@ -387,20 +376,15 @@ async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
     )
     p = XTTSProvider(cfg)
 
-    class _Chunk:
-        def __init__(self, arr): self._arr = arr
-        def detach(self): return self
-        def cpu(self): return self
-        def numpy(self): return self._arr
 
     long_text = " ".join(
         f"Sentence number {i} reporting in with a reasonable length, sir."
         for i in range(12)
     )
     fake_model = MagicMock()
-    fake_model.synthesizer.tts_model.inference_stream.side_effect = lambda **kw: iter(
-        [_Chunk(np.array([0.5], dtype=np.float32))]
-    )
+    fake_model.synthesizer.tts_model.inference.side_effect = lambda **kw: {
+        "wav": np.array([0.5], dtype=np.float32)
+    }
 
     with patch.object(p, "_load_model", return_value=fake_model), \
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
@@ -408,10 +392,10 @@ async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
 
     from jarvis_cli.tts.providers.xtts import _split_for_gpt
     n_pieces = len(_split_for_gpt(long_text))
-    assert fake_model.synthesizer.tts_model.inference_stream.call_count == n_pieces
+    assert fake_model.synthesizer.tts_model.inference.call_count == n_pieces
     texts = [
         c.kwargs["text"]
-        for c in fake_model.synthesizer.tts_model.inference_stream.call_args_list
+        for c in fake_model.synthesizer.tts_model.inference.call_args_list
     ]
     assert " ".join(texts) == long_text
     # pre-roll + one PCM chunk per piece
@@ -459,24 +443,11 @@ def test_stream_receives_normalized_text():
     """The GPT must never see the dash — verify at the inference boundary."""
     import numpy as np
 
-    class _Chunk:
-        def __init__(self, arr):
-            self._arr = arr
-
-        def detach(self):
-            return self
-
-        def cpu(self):
-            return self
-
-        def numpy(self):
-            return self._arr
-
     p = XTTSProvider(XTTSConfig(speaker_embedding="dummy.pth"))
     fake_model = MagicMock()
-    fake_model.synthesizer.tts_model.inference_stream.side_effect = lambda **kw: iter(
-        [_Chunk(np.array([0.5], dtype=np.float32))]
-    )
+    fake_model.synthesizer.tts_model.inference.side_effect = lambda **kw: {
+        "wav": np.array([0.5], dtype=np.float32)
+    }
 
     async def _run():
         with patch.object(p, "_load_model", return_value=fake_model), \
@@ -485,5 +456,40 @@ def test_stream_receives_normalized_text():
 
     import asyncio
     asyncio.run(_run())
-    sent = fake_model.synthesizer.tts_model.inference_stream.call_args.kwargs["text"]
+    sent = fake_model.synthesizer.tts_model.inference.call_args.kwargs["text"]
     assert sent == "A, B."
+
+
+def test_mps_allocator_is_capped_at_construction():
+    """PyTorch's MPS allocator reads its watermarks once, when it is first
+    built, so the cap has to be in place before any model load. Both ratios
+    must be set together — PyTorch rejects a low watermark above the high
+    one, which is how the first attempt at this failed."""
+    env: dict[str, str] = {}
+    with patch.dict(os.environ, env, clear=False):
+        for key in (
+            "PYTORCH_MPS_HIGH_WATERMARK_RATIO", "PYTORCH_MPS_LOW_WATERMARK_RATIO",
+        ):
+            os.environ.pop(key, None)
+        XTTSProvider(XTTSConfig(device="mps", mps_memory_ratio=0.2))
+        assert os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] == "0.2"
+        assert os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] == "0.1"
+
+
+def test_mps_cap_skipped_off_mps_and_when_disabled():
+    for cfg in (
+        XTTSConfig(device="cpu", mps_memory_ratio=0.2),   # no MPS allocator
+        XTTSConfig(device="mps", mps_memory_ratio=0.0),   # explicit opt-out
+    ):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PYTORCH_MPS_HIGH_WATERMARK_RATIO", None)
+            XTTSProvider(cfg)
+            assert "PYTORCH_MPS_HIGH_WATERMARK_RATIO" not in os.environ
+
+
+def test_operator_pinned_ratio_wins():
+    """An explicit env var (or launchd plist entry) is a decision already
+    made — the config default must not silently override it."""
+    with patch.dict(os.environ, {"PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.9"}):
+        XTTSProvider(XTTSConfig(device="mps", mps_memory_ratio=0.2))
+        assert os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] == "0.9"

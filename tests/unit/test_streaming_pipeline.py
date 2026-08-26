@@ -312,6 +312,8 @@ async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
     sink = _FakeSession()
     seen: dict = {}
     with patch(
+        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=False,
+    ), patch(
         "jarvis_cli.daemon.main.open_pcm_sink",
         side_effect=_fake_open_pcm_sink(sink, seen),
     ), patch("jarvis_cli.daemon.main.StreamPlayer") as stream_player:
@@ -324,29 +326,92 @@ async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
 
 
 @pytest.mark.asyncio
-async def test_pcm_sink_stays_off_by_default():
-    """With tts.pcm_playback at its default (False), even a raw-PCM provider
-    must keep the ffplay path — the PCM sink underruns audibly (stutter +
-    crackle) whenever synthesis runs slower than realtime, e.g. XTTS on MPS."""
-    d = Daemon(Config())
+async def test_raw_pcm_never_streams_into_ffplay():
+    """The 2026-08-25 regression. With the PCM sink out of reach — wedged
+    PortAudio, or tts.pcm_playback off — a raw-PCM provider must NOT stream
+    into ffplay. ffplay paces off a clock that runs while its stdin is dry,
+    so a decoder that stalls per piece (XTTS, rtf ~1.2) loses most of the
+    utterance: measured, a 5s stall cut a 5s line to 1.0s, rc=0, stderr
+    empty. The per-sentence synth+afplay fallback plays a finished file and
+    has no clock to fall behind, so that is where these sentences go."""
+    for cfg, label in (
+        (Config(), "pcm_playback off"),
+        (Config(), "wedged"),
+    ):
+        cfg.tts.pcm_playback = label == "wedged"
+        d = Daemon(cfg)
 
-    async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
-        yield "Buffered through ffplay, sir."
+        async def _phrase_stream(
+            event, *, lang, emotion=None,
+        ) -> AsyncIterator[str]:
+            yield "Complete, or not at all, sir."
 
-    d.router.phrase_stream = _phrase_stream
+        d.router.phrase_stream = _phrase_stream
+        primary = _FakePrimary()
+        primary.stream_pcm = (24000, 1)
+        d.tts.primary = primary
+
+        fake_sp, sessions = _fake_stream_player()
+        with patch(
+            "jarvis_cli.daemon.main.pcm_sink_unusable",
+            return_value=label == "wedged",
+        ), patch("jarvis_cli.daemon.main.open_pcm_sink") as pcm_sink, \
+                patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp), \
+                patch.object(d.tts, "synthesize") as synth, \
+                patch("jarvis_cli.daemon.main.play") as afplay:
+            await d._process_one_streaming(_llm_event())
+
+        assert sessions == [], f"{label}: streamed into ffplay"
+        pcm_sink.assert_not_called()
+        synth.assert_awaited_once()
+        afplay.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_try_stream_declines_when_pcm_sink_unusable():
+    """Same guard on the batch path: _try_stream returns False so the caller
+    runs its synth+afplay fallback, rather than feeding a pipe that truncates."""
+    cfg = Config()
+    cfg.tts.pcm_playback = True
+    d = Daemon(cfg)
     primary = _FakePrimary()
     primary.stream_pcm = (24000, 1)
     d.tts.primary = primary
 
+    with patch(
+        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=True,
+    ), patch("jarvis_cli.daemon.main.open_pcm_sink") as pcm_sink, \
+            patch("jarvis_cli.daemon.main.play_stream") as play_stream:
+        ok = await d._try_stream("Hello sir.", "en", None)
+
+    assert ok is False
+    pcm_sink.assert_not_called()
+    play_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_container_provider_still_streams_when_pcm_wedged():
+    """A wedge says nothing about ElevenLabs: ffplay is the only decoder we
+    have for MP3, and those bytes arrive as a steady network trickle rather
+    than one blob per sentence, so the starvation that truncates raw PCM
+    doesn't apply. Streaming must survive."""
+    d = Daemon(Config())
+
+    async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
+        yield "Still streaming, sir."
+
+    d.router.phrase_stream = _phrase_stream
+    primary = _FakePrimary()  # stream_pcm None → container format
+    d.tts.primary = primary
+
     fake_sp, sessions = _fake_stream_player()
     with patch(
-        "jarvis_cli.daemon.main.open_pcm_sink"
-    ) as pcm_sink, patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=True,
+    ), patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
         await d._process_one_streaming(_llm_event())
 
-    pcm_sink.assert_not_called()
     assert len(sessions) == 1
-    assert sessions[0].fed == [b"Buffered through ffplay, sir."]
+    assert sessions[0].fed == [b"Still streaming, sir."]
 
 
 @pytest.mark.asyncio
@@ -364,6 +429,8 @@ async def test_try_stream_pcm_provider_routes_through_pcm_sink():
     sink = _FakeSession()
     seen: dict = {}
     with patch(
+        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=False,
+    ), patch(
         "jarvis_cli.daemon.main.open_pcm_sink",
         side_effect=_fake_open_pcm_sink(sink, seen),
     ), patch("jarvis_cli.daemon.main.play_stream") as play_stream:
@@ -374,3 +441,53 @@ async def test_try_stream_pcm_provider_routes_through_pcm_sink():
     assert seen["rate"] == 24000 and seen["channels"] == 1
     assert sink.fed == [b"Hello sir."]
     assert sink.closed is True
+
+
+@pytest.mark.asyncio
+async def test_sink_is_concluded_before_falling_back_mid_utterance():
+    """Regression 2026-08-25 (review finding). The streaming decision is taken
+    per sentence, so it can flip mid-utterance: sentence 1 opens a sink, the
+    PCM sink then becomes unusable, and sentence 2 is routed to synth+afplay.
+    The open sink must be played out and closed FIRST — otherwise afplay
+    starts over the top of it (two voices at once) and `_register` rebinds
+    `_current_proc` to the afplay handle, leaving the sink uncancellable."""
+    cfg = Config()
+    cfg.tts.pcm_playback = True
+    d = Daemon(cfg)
+
+    async def _phrase_stream(event, *, lang, emotion=None) -> AsyncIterator[str]:
+        yield "First sentence here."
+        yield "Second sentence here."
+
+    d.router.phrase_stream = _phrase_stream
+    primary = _FakePrimary()
+    primary.stream_pcm = (24000, 1)
+    d.tts.primary = primary
+
+    order: list[str] = []
+    sink = _FakeSession()
+
+    async def _close() -> None:
+        order.append("sink-closed")
+        sink.closed = True
+
+    sink.close = _close  # type: ignore[method-assign]
+
+    # False for sentence 1, True for sentence 2 — the sink dies underneath us.
+    decisions = iter([False, True])
+
+    async def _open(*, rate, channels, on_spawn=None):
+        order.append("sink-opened")
+        return sink
+
+    async def _afplay(path, *, on_spawn=None):
+        order.append("afplay")
+
+    with patch.object(d, "_streams_into_ffplay", side_effect=lambda _p: next(decisions)), \
+            patch("jarvis_cli.daemon.main.open_pcm_sink", side_effect=_open), \
+            patch.object(d.tts, "synthesize"), \
+            patch("jarvis_cli.daemon.main.play", side_effect=_afplay):
+        await d._process_one_streaming(_llm_event())
+
+    assert order == ["sink-opened", "sink-closed", "afplay"], order
+    assert sink.fed == [b"First sentence here."]

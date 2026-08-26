@@ -115,6 +115,27 @@ class XTTSConfig:
     # Empty string falls back to the ref_audio_{zh,en} clone path above.
     speaker_embedding: str = "~/.jarvis-cli/voices/jarvis_speaker.pth"
     device: str = "mps"
+    # Ceiling on PyTorch's MPS caching allocator, as a fraction of the GPU's
+    # recommended working-set size (PyTorch's own default is 1.7). Only read
+    # when device is "mps".
+    #
+    # Left alone, that allocator grows to whatever RAM happens to be free and
+    # never returns the pages: measured 2026-08-25, ONE 240-char synthesis
+    # took the process to 23.5 GB of unified — i.e. real — memory on an idle
+    # 32 GB machine, and the live daemon sat at 13 GB after a day, which is
+    # what drove the box 30 GB into swap and dragged synthesis from RTF 1.2 to
+    # a median of 4.7. `torch.mps.empty_cache()` does NOT fix this: it hands
+    # blocks back to PyTorch's pool (driver_allocated drops to 0) while the
+    # pages stay charged to the process, so only the cap actually bounds it.
+    #
+    # The allocator grows to whatever this allows, so the cap — not the decode
+    # path — sets the daemon's resident size. What the path decides is how
+    # tight the cap can be before synthesis starts failing: the old
+    # inference_stream path OOMed on every utterance at 0.2 and fell through
+    # to the `say` voice, while the batch path used since 2026-08-25 holds
+    # 0.2 across repeated worst-case (240-char) lines. Raise it if "MPS
+    # backend out of memory" shows up in the log; 0 disables the cap.
+    mps_memory_ratio: float = 0.2
     # XTTS GPT decoder sampling temperature. Library default 0.75 is too
     # high for our use case — short Jarvis-toned commands suffer audible
     # word repetition / pacing drift across takes. 0.5 cuts variance to
@@ -131,13 +152,13 @@ class XTTSConfig:
     speed_short: float = 1.15
     speed_long: float = 1.00
     short_threshold_chars: int = 60
-    # GPT tokens decoded per streamed chunk. Keep at 20 on MPS: measured
-    # 2026-07-03, chunk=10 is strictly worse on BOTH axes — per-chunk
-    # overhead dominates (first_chunk 4.16s vs 0.58s, RTF 2.23 vs 0.76),
-    # and RTF > 1 starves the player mid-utterance (audible stutter on
-    # anything longer than a short line). 40 buys a little more throughput
-    # (RTF 0.68) at ~1s first chunk; 20 is the sweet spot.
-    stream_chunk_size: int = 20
+    # `stream_chunk_size` lived here until 2026-08-25, tuned to 20 on MPS.
+    # It is gone rather than deprecated: the provider no longer calls
+    # `inference_stream` at all (see xtts._produce — each piece was already
+    # buffered whole, so the streaming decoder bought nothing and cost double
+    # the GPU memory), and a knob that silently drives nothing is worse than
+    # no knob. Unknown keys are ignored by _merge, so configs still setting it
+    # keep loading.
 
 
 @dataclass
@@ -228,12 +249,29 @@ class TTSConfig:
     # speaker while en keeps the clone. Empty = no override.
     provider_zh: str = ""
     # Route raw-PCM streaming through the in-process sounddevice sink instead
-    # of an ffplay subprocess. Off by default: when synthesis runs slower than
-    # realtime (XTTS on MPS), the blocking PortAudio stream underruns audibly
-    # (stutter + crackle), while ffplay's internal buffering starves silently.
-    # Flip on once the PCM sink grows a jitter buffer that rides out decode
-    # stalls as clean silence.
-    pcm_playback: bool = False
+    # of an ffplay subprocess. On by default since 2026-08-25: the jitter
+    # buffer this switch was waiting for exists (PCMPlayer prebuffers, then
+    # pads underruns with clean silence), and the ffplay alternative turned
+    # out to be the worse of the two — it paces off a clock that keeps running
+    # while its stdin is dry, so a slower-than-realtime decoder loses most of
+    # each utterance (a 5s stall cut a 5s line to 1.0s under measurement).
+    # Turning this off no longer routes raw PCM to ffplay; it disables
+    # streaming for those providers entirely, in favour of synth+afplay.
+    pcm_playback: bool = True
+    # Run the heavy providers (see tts.factory.HEAVY_PROVIDERS) in a child
+    # process the daemon can replace. They leak native memory per utterance —
+    # ~40 MB for XTTS, linear, no plateau, inside torch/coqui rather than our
+    # code — and native memory only returns when a process ends. Recycling the
+    # DAEMON would reclaim it too, but at the cost of dropping the socket, the
+    # event queue and the warmed retrieval index; recycling a child costs a
+    # model reload and nothing else. Off puts the model back in-process, which
+    # is simpler to debug and fine for a short-lived daemon.
+    worker_process: bool = True
+    # Syntheses a worker serves before the daemon replaces it at its next idle
+    # moment. 100 lines is roughly 4 GB of leak — about a day at the observed
+    # rate of 76 utterances in 6.5 hours. Lower trades more model reloads for a
+    # smaller ceiling; 0 disables recycling and lets the child leak forever.
+    worker_max_syntheses: int = 100
     xtts: XTTSConfig = field(default_factory=XTTSConfig)
     elevenlabs: ElevenLabsConfig = field(default_factory=ElevenLabsConfig)
     cosyvoice: CosyVoiceConfig = field(default_factory=CosyVoiceConfig)

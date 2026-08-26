@@ -6,6 +6,7 @@ import-light when XTTS isn't actually used (eg. user opts into ElevenLabs).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import threading
 import time
@@ -89,6 +90,21 @@ _PREROLL_SECONDS = 0.25
 _DASH_RUN = re.compile(r"\s*[—–]+\s*")
 
 
+def _cap_mps_allocator(ratio: float) -> None:
+    """Bound PyTorch's MPS caching allocator (see XTTSConfig.mps_memory_ratio).
+
+    PyTorch reads both watermark ratios when it builds the allocator, and
+    rejects a low watermark above the high one — so they are only ever set as
+    a pair, low at half of high. `setdefault`, not assignment: an operator who
+    has pinned either ratio in the environment (or the launchd plist) has
+    already made this decision and must win.
+    """
+    if ratio <= 0:  # explicit opt-out — keep PyTorch's own default
+        return
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", str(ratio))
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", str(ratio / 2))
+
+
 def _normalize_pauses(text: str, lang: str) -> str:
     """Rewrite dash pauses as comma pauses in the text handed to the GPT."""
     sep = "，" if lang == "zh" else ", "
@@ -152,6 +168,11 @@ class XTTSProvider(TTSProvider):
 
     def __init__(self, cfg: XTTSConfig) -> None:
         self.cfg = cfg
+        # Must happen before torch's MPS allocator initialises, which is why
+        # it sits in __init__ (daemon construction) and not in _load_model:
+        # the ratios are read once, when the allocator is first built.
+        if cfg.device == "mps":
+            _cap_mps_allocator(cfg.mps_memory_ratio)
         self._model: Any | None = None
         self._latents: dict[str, Any] | None = None
         # (gpt_cond_latent, speaker_embedding) per language for the streaming
@@ -376,24 +397,39 @@ class XTTSProvider(TTSProvider):
                 # next piece decodes while the current one plays. The cost is
                 # a possible short pause at piece boundaries — a natural
                 # sentence break, not a mid-word chop.
+                #
+                # And because the piece is buffered whole anyway, this uses
+                # `inference` rather than `inference_stream`: nothing consumed
+                # the chunks incrementally, so the streaming decoder bought
+                # nothing while costing roughly double the GPU memory —
+                # measured 2026-08-25, an 8-10 GB plateau versus 4.3 GB, on a
+                # machine whose unified memory the allocator never gives back
+                # (see XTTSConfig.mps_memory_ratio). Head-to-head on identical
+                # text, both orderings, three runs each: batch was equal or
+                # faster at every length (RTF medians 0.55/0.68 vs 0.70/0.82
+                # short, 1.09/0.93 vs 1.22/1.24 long), the spread between runs
+                # of one path being wider than the gap between paths.
                 pieces = _split_for_gpt(text)
                 for i, piece in enumerate(pieces):
                     if stop.is_set():
                         break
                     t0 = time.perf_counter()
-                    blob = bytearray()
-                    for chunk in model.synthesizer.tts_model.inference_stream(
+                    # Cancellation is now only checked between pieces: a
+                    # batch decode has no yield point. Nothing is audible
+                    # either way — a cancelled piece was never enqueued — so
+                    # the only cost is finishing a decode whose audio is
+                    # then dropped.
+                    wav = model.synthesizer.tts_model.inference(
                         text=piece,
                         language=language,
                         gpt_cond_latent=gpt_cond_latent,
                         speaker_embedding=speaker_embedding,
                         temperature=temperature,
                         speed=speed,
-                        stream_chunk_size=self.cfg.stream_chunk_size,
-                    ):
-                        if stop.is_set():
-                            break
-                        blob += _to_int16_pcm(chunk.detach().cpu().numpy()).tobytes()
+                    )["wav"]
+                    # _to_int16_pcm np.asarray()s it; inference() already
+                    # returns host-side samples, as the file path relies on too.
+                    blob = bytearray(_to_int16_pcm(wav).tobytes())
                     if blob and not stop.is_set():
                         loop.call_soon_threadsafe(queue.put_nowait, bytes(blob))
                     wall = time.perf_counter() - t0

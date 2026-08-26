@@ -4,7 +4,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -568,8 +568,10 @@ async def test_pcm_release_leak_wedges_process_and_open_pcm_sink_falls_back():
     release thread, that thread may still hold CoreAudio's HAL mutex — so the
     NEXT Pa_OpenStream blocks forever and the speech queue silently fills for
     days. Once a release leaks, open_pcm_sink must never touch PortAudio
-    again in this process: ffplay (its own process, its own HAL) still
-    plays."""
+    again in this process — and since 2026-08-25 it refuses outright rather
+    than handing back an ffplay pipe, because feeding raw PCM into ffplay
+    truncates it (see pcm_sink_unusable). The daemon turns that refusal into
+    synth+afplay."""
     import jarvis_cli.player as player_mod
     from jarvis_cli.player import PCMPlayer
 
@@ -594,9 +596,9 @@ async def test_pcm_release_leak_wedges_process_and_open_pcm_sink_falls_back():
             await player.close()  # bounded wait, leaks the release thread
         assert player_mod._pcm_wedged is True
 
-        sink = await player_mod.open_pcm_sink(rate=24000, channels=1)
+        with pytest.raises(RuntimeError, match="wedged"):
+            await player_mod.open_pcm_sink(rate=24000, channels=1)
 
-    assert sink is fallback
     assert len(created) == 1  # PortAudio was never opened again
     unwedge.set()  # let the leaked release thread exit
 
@@ -685,33 +687,102 @@ async def test_open_pcm_sink_prefers_pcm_player():
 
 
 @pytest.mark.asyncio
-async def test_open_pcm_sink_falls_back_to_ffplay_and_warns_once():
-    """Without sounddevice the sink must degrade to the ffplay StreamPlayer
-    (spawned with the provider's decode flags) — and nag exactly once per
-    process, not per utterance."""
+async def test_missing_sounddevice_raises_latches_and_warns_once():
+    """Without sounddevice there is no sink to hand back. open_pcm_sink must
+    RAISE rather than degrade to ffplay — that fallback is what truncated
+    speech on 2026-08-25 — latch the process as unusable so callers stop
+    trying, and nag exactly once, not per utterance."""
     import jarvis_cli.player as player_mod
-
-    spawn_calls: list[tuple] = []
-    fallback = object()
-
-    class _FakeStreamPlayer:
-        @classmethod
-        async def spawn(cls, *, input_args=None, on_spawn=None):
-            spawn_calls.append((input_args, on_spawn))
-            return fallback
 
     # sys.modules[name] = None makes `import sounddevice` raise ImportError.
     with patch.dict(sys.modules, {"sounddevice": None}), \
-            patch("jarvis_cli.player.StreamPlayer", _FakeStreamPlayer), \
+            patch("jarvis_cli.player.StreamPlayer") as stream_player, \
             patch("jarvis_cli.player.logger") as fake_logger, \
-            patch.object(player_mod, "_pcm_fallback_warned", False):
-        on_spawn = MagicMock()
-        sink1 = await player_mod.open_pcm_sink(
-            rate=24000, channels=1,
-            input_args=("-f", "s16le"), on_spawn=on_spawn,
-        )
-        sink2 = await player_mod.open_pcm_sink(rate=24000, channels=1)
+            patch.object(player_mod, "_pcm_fallback_warned", False), \
+            patch.object(player_mod, "_pcm_unavailable", False):  # process-wide
+        for _ in range(2):
+            with pytest.raises(ImportError):
+                await player_mod.open_pcm_sink(rate=24000, channels=1)
+        assert player_mod.pcm_sink_unusable() is True
 
-    assert sink1 is fallback and sink2 is fallback
-    assert spawn_calls[0] == (("-f", "s16le"), on_spawn)
+    stream_player.spawn.assert_not_called()
     fake_logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_transient_device_error_does_not_latch():
+    """A device that fails to open is usually momentary — the output device
+    switched, Bluetooth dropped, the device was busy. Latching those (briefly
+    the behaviour on 2026-08-25) strands the daemon on synth+afplay for the
+    rest of its life over a glitch that heals in seconds. Only an
+    unimportable sounddevice is permanent."""
+    import jarvis_cli.player as player_mod
+
+    class _FakePortAudioError(Exception):
+        pass
+
+    async def _boom(**_kwargs):
+        raise _FakePortAudioError("device unavailable")
+
+    with patch.object(player_mod, "_pcm_wedged", False), \
+            patch.object(player_mod, "_pcm_unavailable", False), \
+            patch.object(player_mod.PCMPlayer, "spawn", _boom):
+        with pytest.raises(_FakePortAudioError):
+            await player_mod.open_pcm_sink(rate=24000, channels=1)
+        # The next utterance must be free to try PortAudio again.
+        assert player_mod.pcm_sink_unusable() is False
+
+
+@pytest.mark.asyncio
+async def test_wedge_notifies_registered_callback_once():
+    """The daemon self-heals off this callback, so a wedge must reach it —
+    and only on the first wedge, since every later playback re-reports the
+    same stuck device and one restart settles all of them."""
+    import jarvis_cli.player as player_mod
+
+    seen: list[str] = []
+    with patch.object(player_mod, "_pcm_wedged", False), \
+            patch.object(player_mod, "_wedge_callback", None):
+        player_mod.on_pcm_wedge(seen.append)
+        try:
+            player_mod._mark_pcm_wedged("device release stuck")
+            player_mod._mark_pcm_wedged("device open stuck")
+        finally:
+            player_mod.on_pcm_wedge(None)
+
+    assert seen == ["device release stuck"]
+
+
+@pytest.mark.asyncio
+async def test_wedge_callback_failure_never_breaks_playback():
+    """The callback runs inside the audio path. A bug in it must not turn a
+    degraded-but-audible daemon into a crashing one."""
+    import jarvis_cli.player as player_mod
+
+    def _boom(_reason: str) -> None:
+        raise RuntimeError("self-heal is broken")
+
+    with patch.object(player_mod, "_pcm_wedged", False), \
+            patch.object(player_mod, "_wedge_callback", None):
+        player_mod.on_pcm_wedge(_boom)
+        try:
+            player_mod._mark_pcm_wedged("device release stuck")
+        finally:
+            player_mod.on_pcm_wedge(None)
+        assert player_mod._pcm_wedged is True
+
+
+def test_pcm_sink_unusable_reports_wedge_and_missing_device():
+    """Both routes to "no PortAudio here" must read the same to callers —
+    they make the identical decision (don't stream) either way."""
+    import jarvis_cli.player as player_mod
+
+    with patch.object(player_mod, "_pcm_wedged", False), \
+            patch.object(player_mod, "_pcm_unavailable", False):
+        assert player_mod.pcm_sink_unusable() is False
+    with patch.object(player_mod, "_pcm_wedged", True), \
+            patch.object(player_mod, "_pcm_unavailable", False):
+        assert player_mod.pcm_sink_unusable() is True
+    with patch.object(player_mod, "_pcm_wedged", False), \
+            patch.object(player_mod, "_pcm_unavailable", True):
+        assert player_mod.pcm_sink_unusable() is True

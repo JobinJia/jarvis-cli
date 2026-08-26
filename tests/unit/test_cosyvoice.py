@@ -351,3 +351,34 @@ async def test_cosyvoice_escape_valve_ignores_genuine_double_take(tmp_path: Path
     v = p._baseline.check(text, 2.5, ratio_threshold=1.35, fallback_cps=12.0)
     assert v.expected != 5.0  # nothing learned from the double-take
     assert abs(v.expected - 33 / 12.0) < 0.01  # still pure char fallback
+
+
+@pytest.mark.asyncio
+async def test_cosyvoice_loads_the_model_without_prewarm(tmp_path: Path):
+    """The daemon defers prewarm for a zh override the config can't route to
+    (see Daemon._tts_prewarm_plan); that only holds because synthesize loads
+    the model itself. Lock it: no prewarm() call, model still loaded."""
+    ref = tmp_path / "ref_en.wav"
+    ref.write_bytes(b"\x00" * 1024)
+    cfg = CosyVoiceConfig(
+        model_dir=str(tmp_path / "model"),
+        ref_audio_zh=str(ref),
+        ref_audio_en=str(ref),
+        duration_baseline_path=str(tmp_path / "baseline.json"),
+    )
+    p = CosyVoiceProvider(cfg)
+    assert p._model is None  # nothing warmed it
+
+    loads = []
+
+    def _fake_load():
+        loads.append(1)
+        model = MagicMock()
+        model.inference_cross_lingual = MagicMock(return_value=[0.1] * 8)
+        p._model = model
+        return model
+
+    with patch.object(p, "_load_model", _fake_load):
+        await p.synthesize("Sir.", lang="zh", out_path=tmp_path / "o.wav")
+
+    assert loads == [1]

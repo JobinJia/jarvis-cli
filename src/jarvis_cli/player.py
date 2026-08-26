@@ -37,14 +37,56 @@ from loguru import logger
 # clears the wedge, so the flag never resets.
 _pcm_wedged = False
 
+# Set when sounddevice is missing or PortAudio won't initialise at all. That's
+# a static property of the install rather than a fault, but it strands callers
+# on the same ffplay path a wedge does, so `pcm_sink_unusable` reports both.
+_pcm_unavailable = False
+
+# Invoked once, with the reason, the first time this process wedges. The daemon
+# registers a handler that schedules a restart — nothing inside the process can
+# clear a wedge, so without one the degradation lasts until someone notices.
+_wedge_callback: Callable[[str], None] | None = None
+
+
+def on_pcm_wedge(callback: Callable[[str], None] | None) -> None:
+    """Register the wedge notification handler; None clears it."""
+    global _wedge_callback
+    _wedge_callback = callback
+
+
+def pcm_sink_unusable() -> bool:
+    """True once this process can no longer reach PortAudio — wedged mid-run,
+    or sounddevice unusable from the start.
+
+    Callers consult this to decide NOT to stream raw PCM at all. With
+    PortAudio out, the only sink left is ffplay, and ffplay cannot absorb a
+    producer that stalls: its clock keeps running while the pipe is dry, so
+    audio handed over after the stall is already "late" and most of it is
+    discarded. Measured 2026-08-25 by feeding silent PCM through the daemon's
+    exact spawn/feed/close sequence — a 2s stall cut a 5s utterance to 3.4s,
+    a 5s stall cut it to 1.0s, and rc stayed 0 with an empty stderr the whole
+    time. XTTS stalls for the full decode of every piece (rtf ~1.2), which is
+    precisely that shape; the user heard it as a run of beeps and a sentence
+    that never finished. Synthesizing to a file and handing it to afplay has
+    no clock to fall behind, so that is where those utterances go instead.
+    """
+    return _pcm_wedged or _pcm_unavailable
+
 
 def _mark_pcm_wedged(reason: str) -> None:
     global _pcm_wedged
+    first = not _pcm_wedged
     _pcm_wedged = True
     logger.warning(
-        "pcm sink: {} — PortAudio is wedged in this process; all further "
-        "playback uses ffplay until the daemon restarts", reason,
+        "pcm sink: {} — PortAudio is wedged in this process; playback falls "
+        "back to file-based synth until the daemon restarts", reason,
     )
+    if not first or _wedge_callback is None:
+        return
+    try:
+        _wedge_callback(reason)
+    except Exception as exc:  # noqa: BLE001 — never break playback over this
+        logger.warning("pcm sink: wedge callback failed ({})", exc)
 
 
 class Cancellable(Protocol):
@@ -454,24 +496,40 @@ async def open_pcm_sink(
     *,
     rate: int,
     channels: int,
-    input_args: Sequence[str] | None = None,
     on_spawn: Callable[[Cancellable], None] | None = None,
-) -> "PCMPlayer | StreamPlayer":
-    """Best sink for a raw-PCM stream: in-process PCMPlayer when sounddevice
-    is available, else the ffplay StreamPlayer (spawned with `input_args`,
-    the provider's decode flags). Both expose feed/close/abort, so callers
-    don't care which they got."""
-    global _pcm_fallback_warned
+) -> "PCMPlayer":
+    """Open the in-process PCM sink for a raw-PCM stream, or raise.
+
+    Deliberately WITHOUT an ffplay fallback, though it had one until
+    2026-08-25. This sink only ever serves raw-PCM providers, and handing
+    those to ffplay is precisely the truncation bug documented on
+    `pcm_sink_unusable` — so "no PortAudio" must mean "don't stream at all",
+    not "stream somewhere worse". Both daemon callers already treat a raised
+    error that way, falling back to synthesizing the whole utterance to a
+    file and playing that.
+
+    Only an unimportable sounddevice latches `_pcm_unavailable`: that is a
+    property of the install and cannot change while the process runs. A
+    device-level failure — the output device switched, Bluetooth headphones
+    dropping out, the device momentarily busy — is transient, so it fails
+    this one utterance and the next attempt opens PortAudio again. Latching
+    those as well (briefly the case on 2026-08-25) would strand the daemon on
+    the slower synth+afplay path for the rest of its life over a glitch that
+    healed in seconds.
+    """
+    global _pcm_fallback_warned, _pcm_unavailable
     if _pcm_wedged:
-        # PortAudio is dead in this process (see _mark_pcm_wedged) — go
-        # straight to ffplay, which lives in its own process and still plays.
-        return await StreamPlayer.spawn(input_args=input_args, on_spawn=on_spawn)
+        # Opening would only burn OPEN_TIMEOUT_SECONDS before failing — the
+        # HAL mutex is held for the life of this process (_mark_pcm_wedged).
+        raise RuntimeError("pcm sink: PortAudio is wedged in this process")
     try:
         return await PCMPlayer.spawn(rate=rate, channels=channels, on_spawn=on_spawn)
-    except Exception as exc:  # ImportError or PortAudio init failure
+    except ImportError as exc:
+        _pcm_unavailable = True
         if not _pcm_fallback_warned:
             _pcm_fallback_warned = True
             logger.warning(
-                "sounddevice unavailable ({}); falling back to ffplay", exc,
+                "sounddevice unavailable ({}); raw-PCM speech uses "
+                "synth+afplay for the life of this process", exc,
             )
-        return await StreamPlayer.spawn(input_args=input_args, on_spawn=on_spawn)
+        raise
