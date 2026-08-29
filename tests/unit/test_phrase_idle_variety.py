@@ -1,5 +1,5 @@
 """idle_prompt variety: every request carries a random flavor hint and the
-previous line to avoid, so the LLM improvises instead of parroting."""
+recently spoken lines to avoid, so the LLM improvises instead of parroting."""
 import json
 
 import pytest
@@ -15,7 +15,9 @@ def _idle_event() -> Event:
     return Event(notification_type="idle_prompt", tool_name=None, tool_input={})
 
 
-def _build(event: Event, avoid: str | None = None) -> list[dict[str, str]]:
+def _build(
+    event: Event, avoid: str | list[str] | None = None,
+) -> list[dict[str, str]]:
     return build_messages(
         event, "en", "", target_chars=70, hard_cap=120, avoid=avoid,
     )
@@ -27,8 +29,10 @@ def test_idle_blob_carries_flavor_from_hint_list():
 
 
 def test_idle_blob_carries_avoid_when_given():
-    blob = json.loads(_build(_idle_event(), avoid="Sir, old line.")[-1]["content"])
-    assert blob["avoid"] == "Sir, old line."
+    blob = json.loads(
+        _build(_idle_event(), avoid=["Sir, old line."])[-1]["content"]
+    )
+    assert blob["avoid"] == ["Sir, old line."]
 
 
 def test_idle_blob_omits_avoid_when_none():
@@ -49,7 +53,8 @@ def test_non_idle_blob_gains_no_flavor_or_avoid():
         tool_input={"command": "ls"},
     )
     messages = build_messages(
-        ev, "en", "ls", target_chars=70, hard_cap=120, avoid="should be ignored",
+        ev, "en", "ls", target_chars=70, hard_cap=120,
+        avoid=["should be ignored"],
     )
     blob = json.loads(messages[-1]["content"])
     assert "flavor" not in blob
@@ -82,7 +87,7 @@ async def test_router_threads_previous_idle_line_as_avoid():
 
     await router.phrase(_idle_event(), lang="en")
     second_blob = json.loads(stub.calls[1][-1]["content"])
-    assert second_blob["avoid"] == "Your move, sir."
+    assert second_blob["avoid"] == ["Your move, sir."]
 
 
 @pytest.mark.asyncio

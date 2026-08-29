@@ -5,6 +5,7 @@ dumb HTTP adapters that just take pre-built messages and return a string.
 """
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from loguru import logger
@@ -13,7 +14,7 @@ from ..config import Config
 from ..types import Emotion, Event, Lang
 from . import extract, redact
 from .chunker import chunk_sentences
-from .prompt import build_messages
+from .prompt import FLAVORED_TYPES, build_messages
 from .providers.base import PhraseProvider
 from .templates import render_template
 
@@ -45,9 +46,42 @@ class PhraseRouter:
         # Callers wire this up to surface "Sir, switching to cloud" so
         # the user notices before the meter ticks for a while unnoticed.
         self._on_primary_fallback = on_primary_fallback
-        # Last spoken idle line, threaded into the next idle request as
-        # `avoid` so the model doesn't repeat itself back-to-back.
-        self._last_idle_line: str | None = None
+        # Recently spoken lines per event type (idle_prompt, task_complete),
+        # threaded into the next same-type request as `avoid` so the model
+        # doesn't repeat itself.
+        self._last_lines: dict[str, deque[str]] = {}
+
+    # Event types whose repetition the user actually hears as a chant.
+    # Derived from prompt.py's flavor table: a type gets `avoid` threading
+    # exactly because build_messages injects a flavor for it — one source
+    # of truth, the two sides cannot drift.
+    _AVOID_TYPES = FLAVORED_TYPES
+
+    # How many recent lines per type to show the model as `avoid`. One was
+    # not enough: with a flavor hint the openings did vary, but the endings
+    # collapsed onto one stock tail ("... - all is settled." three completions
+    # running), and a single whole-line avoid can't show a tail shared by
+    # sentences that are otherwise different. A window makes the rut visible.
+    _AVOID_WINDOW = 5
+
+    def _avoid_for(self, event: Event) -> list[str] | None:
+        if event.notification_type not in self._AVOID_TYPES:
+            return None
+        lines = self._last_lines.get(event.notification_type)
+        return list(lines) if lines else None
+
+    def _remember_line(self, event: Event, text: str) -> None:
+        if event.notification_type not in self._AVOID_TYPES or not text:
+            return
+        lines = self._last_lines.setdefault(
+            event.notification_type, deque(maxlen=self._AVOID_WINDOW)
+        )
+        # An exact repeat re-takes the newest slot instead of occupying a
+        # second one — otherwise a model stuck on one phrase would evict its
+        # own history and forget everything else it just said.
+        if text in lines:
+            lines.remove(text)
+        lines.append(text)
 
     def _address_for(self, lang: Lang) -> str | None:
         """The configured form of address for `lang`, or None (prompt default)
@@ -65,8 +99,7 @@ class PhraseRouter:
         emotion: Emotion | None = None,
     ) -> str:
         text = await self._phrase_inner(event, lang, emotion=emotion)
-        if event.notification_type == "idle_prompt":
-            self._last_idle_line = text
+        self._remember_line(event, text)
         return text
 
     async def _phrase_inner(
@@ -89,8 +122,7 @@ class PhraseRouter:
             target_chars=target_chars,
             hard_cap=hard_cap,
             humor_level=self.cfg.behavior.humor_level,
-            avoid=self._last_idle_line
-            if event.notification_type == "idle_prompt" else None,
+            avoid=self._avoid_for(event),
             emotion=emotion,
             address=self._address_for(lang),
         )
@@ -182,8 +214,7 @@ class PhraseRouter:
             target_chars=target_chars,
             hard_cap=hard_cap,
             humor_level=self.cfg.behavior.humor_level,
-            avoid=self._last_idle_line
-            if event.notification_type == "idle_prompt" else None,
+            avoid=self._avoid_for(event),
             emotion=emotion,
             address=self._address_for(lang),
         )
@@ -194,7 +225,7 @@ class PhraseRouter:
         async for sentence in chunk_sentences(token_stream):
             collected.append(sentence)
             yield sentence
-        # Update last-idle state from the full text so the non-streaming
+        # Update last-line state from the full text so the non-streaming
         # dedup logic stays consistent.
-        if event.notification_type == "idle_prompt" and collected:
-            self._last_idle_line = " ".join(collected)
+        if collected:
+            self._remember_line(event, " ".join(collected))

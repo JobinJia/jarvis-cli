@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Sequence
 
 from ..types import Emotion, Event, Lang, emotion_for
 
@@ -82,8 +83,10 @@ _EMOTION_CLAUSES: dict[str, str] = {
 # Appended to the system prompt only for idle_prompt requests.
 _IDLE_CLAUSE = (
     " This is an idle notification with nothing to report; improvise a fresh "
-    "one-liner inviting the user back, riffing on the 'flavor' hint. Never "
-    "reuse the phrasing in 'avoid', and do not copy the example reply."
+    "one-liner inviting the user back, riffing on the 'flavor' hint. "
+    "'avoid' lists the lines you most recently used: reuse none of their "
+    "wording, and above all give this line a DIFFERENT ending than any of "
+    "them. Do not copy the example reply."
 )
 
 # Appended for tool_failure: behavioral frame on top of the emotion clause.
@@ -109,9 +112,43 @@ _ASK_CLAUSE = (
 # Appended for task_complete: behavioral frame on top of the emotion clause.
 _COMPLETE_CLAUSE = (
     " This is a COMPLETION notice: Claude just finished responding. Reply with "
-    "a very brief acknowledgement of three to six words (e.g. 'All done, sir.'). "
-    "Do not summarise the work; do not ask a question."
+    "a very brief acknowledgement of three to six words, riffing on the "
+    "'flavor' hint. 'avoid' lists the lines you most recently used: reuse none "
+    "of their wording, and above all give this line a DIFFERENT ending than "
+    "any of them. Do not copy the example reply. Do not summarise the work; "
+    "do not ask a question."
 )
+
+# Improvisation angles for task_complete, same trick as _IDLE_FLAVORS: a
+# 3-6 word ack with no varying input collapses onto one stock phrase —
+# "All done, sir." played 86 times in five days before this existed, which
+# the user heard as a chant ("Hold on, Hold on"). The flavor points each
+# ack somewhere new; the model writes the sentence.
+_COMPLETE_FLAVORS: tuple[str, ...] = (
+    "a parcel delivered",
+    "a dish served",
+    "a curtain falling after the show",
+    "a race lap completed",
+    "a ship arrived at port",
+    "a mission report: objective achieved",
+    "a letter sealed and posted",
+    "a chess game won",
+    "a workshop tool set down, work finished",
+    "a ledger closed for the day",
+    "a suit pressed and handed over",
+    "an orchestra's final note",
+)
+
+# One table drives the variety machinery: a type listed here gets a random
+# flavor hint injected into its request blob, and the router threads the
+# previously spoken line back as `avoid` (it imports FLAVORED_TYPES, so the
+# two sides cannot drift). session_end is the next candidate if its
+# farewells start chanting.
+_FLAVORS: dict[str, tuple[str, ...]] = {
+    "idle_prompt": _IDLE_FLAVORS,
+    "task_complete": _COMPLETE_FLAVORS,
+}
+FLAVORED_TYPES: tuple[str, ...] = tuple(_FLAVORS)
 
 # --- Tier 1 lifecycle clauses ---
 
@@ -168,9 +205,6 @@ _CONTEXT_OVERFLOW_CLAUSE = (
 )
 
 
-def _pick_flavor() -> str:
-    return random.choice(_IDLE_FLAVORS)
-
 # ---------------------------------------------------------------------------
 # Few-shot examples, one assistant reply PER humor level.
 #
@@ -192,11 +226,14 @@ _FEW_SHOT_USERS: tuple[str, ...] = (
     '{"notification_type":"permission_prompt","tool_name":"Write","summary":"write config.toml"}',
     '{"notification_type":"permission_prompt","tool_name":"WebFetch","summary":"fetch https://example.com"}',
     '{"notification_type":"idle_prompt","tool_name":null,"summary":"",'
-    '"flavor":"an orchestra awaiting its conductor","avoid":"Sir, Claude awaits your guidance."}',
+    '"flavor":"an orchestra awaiting its conductor",'
+    '"avoid":["Sir, Claude awaits your guidance.","Sir, the stage is set — your move."]}',
     '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: Pick a colour | options: Red; Blue; Green"}',
     '{"notification_type":"ask_user_question","tool_name":"AskUserQuestion","summary":"ask: 你想对博客做哪方面的调整 | options: 新增博客文章; 调整主题样式; 更新站点配置; 部署或构建相关"}',
     '{"notification_type":"tool_failure","tool_name":"Bash","summary":"Bash failed: npm test: 3 tests failed"}',
-    '{"notification_type":"task_complete","tool_name":null,"summary":""}',
+    '{"notification_type":"task_complete","tool_name":null,"summary":"",'
+    '"flavor":"a dish served",'
+    '"avoid":["All done, sir.","Sir, the letter is posted — all is settled."]}',
 )
 
 # Assistant replies: one 4-tuple (levels 0..3) per scenario, same order as
@@ -248,11 +285,11 @@ _FEW_SHOT_REPLIES_EN: tuple[tuple[str, str, str, str], ...] = (
         "Sir, three tests have failed — the build did not pass.",
         "Sir, three tests failed — the build stands rejected.",
     ),
-    (  # task_complete
-        "Done, sir.",
-        "All done, sir.",
-        "All wrapped up, sir.",
-        "Victory, sir — all done.",
+    (  # task_complete (dish-served flavor)
+        "Dinner is served, sir.",
+        "Served and ready, sir.",
+        "The dish is served, sir — piping hot.",
+        "Dinner is served, sir — do try it before it cools.",
     ),
 )
 
@@ -299,11 +336,11 @@ _FEW_SHOT_REPLIES_ZH: tuple[tuple[str, str, str, str], ...] = (
         "先生，三个测试用例未通过——构建受阻。",
         "先生，测试折了三个用例——构建未过。",
     ),
-    (  # task_complete
-        "已完成，先生。",
-        "全部办妥，先生。",
-        "都收拾利落了，先生。",
-        "大功告成，先生——不费吹灰之力。",
+    (  # task_complete (dish-served flavor)
+        "菜已上桌，先生。",
+        "先生，菜已上桌。",
+        "先生，菜已上桌——还冒着热气。",
+        "先生，上菜了——趁热，莫等凉。",
     ),
 )
 
@@ -344,7 +381,7 @@ def build_messages(
     target_chars: int,
     hard_cap: int,
     humor_level: int = 1,
-    avoid: str | None = None,
+    avoid: str | Sequence[str] | None = None,
     emotion: Emotion | None = None,
     address: str | None = None,
 ) -> list[dict[str, str]]:
@@ -363,9 +400,10 @@ def build_messages(
     None). It is substituted into the few-shot examples as well as the
     system prompt, for the same examples-beat-instructions reason.
 
-    `avoid` (idle_prompt only) is the previously spoken idle line; the
-    request carries it plus a random `flavor` hint so the model improvises
-    a fresh sentence instead of parroting one stock phrase.
+    `avoid` (idle_prompt and task_complete) is the recently spoken lines
+    for that event type, oldest first; the request carries them plus a random
+    `flavor` hint so the model improvises a fresh sentence instead of
+    parroting one stock phrase. A bare string is accepted and wrapped.
 
     `emotion` selects a tone clause from `_EMOTION_CLAUSES`. When None,
     the emotion is derived from the event's notification_type via
@@ -426,9 +464,10 @@ def build_messages(
         "tool_name": event.tool_name,
         "summary": summary,
     }
-    if is_idle:
-        blob["flavor"] = _pick_flavor()
+    flavors = _FLAVORS.get(event.notification_type)
+    if flavors:
+        blob["flavor"] = random.choice(flavors)
         if avoid:
-            blob["avoid"] = avoid
+            blob["avoid"] = [avoid] if isinstance(avoid, str) else list(avoid)
     user_blob = json.dumps(blob, ensure_ascii=False)
     return [{"role": "system", "content": sys}, *few_shot, {"role": "user", "content": user_blob}]
