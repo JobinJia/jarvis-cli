@@ -19,6 +19,7 @@ from ..config import DEFAULT_CONFIG_PATH, Config, load_config
 from ..notify import remote as remote_notify
 from ..notify import webhook as webhook_notify
 from ..phrase.language import detect_for
+from ..phrase.redact import speakable
 from ..phrase.providers.anthropic import AnthropicProvider
 from ..phrase.providers.base import PhraseProvider
 from ..phrase.providers.deepseek import DeepSeekProvider
@@ -594,6 +595,10 @@ class Daemon:
                 text = await self.router.phrase(
                     event, lang=lang, emotion=emotion,
                 )
+            # Second speakability gate (the first scrubs the LLM's input):
+            # pre-baked text never saw the router, and the LLM can echo an
+            # ID from its own context — never hand TTS a UUID to spell out.
+            text = speakable(text)
             # Stage timing (DEBUG): phrase covers the LLM/briefing cost above
             # (~0 for pre-baked/prefetched text); total spans through playback.
             phrase_ms = (time.monotonic() - phrase_started) * 1000
@@ -728,6 +733,8 @@ class Daemon:
                 if cancellable and sid and sid in self._cancelled_sessions:
                     logger.debug("DROP cancelled-mid-stream sid={}", sid)
                     break
+                # Second speakability gate — see _process_one.
+                sentence = speakable(sentence)
                 spoken_parts.append(sentence)
                 logger.debug(
                     "STREAM-PLAY type={} sid={} emotion={} chunk={!r}",

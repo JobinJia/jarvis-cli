@@ -1,4 +1,4 @@
-from jarvis_cli.phrase.redact import scrub
+from jarvis_cli.phrase.redact import scrub, speakable
 
 
 def test_scrub_replaces_home_path(monkeypatch):
@@ -59,3 +59,49 @@ def test_scrub_disabled_only_truncates():
 
 def test_scrub_empty_string_is_empty():
     assert scrub("") == ""
+
+
+# --- speakable: unspeakable ID shortening (the 2026-08-28 cicada buzz) ------
+
+
+def test_speakable_shortens_uuid_to_stub():
+    out = speakable("reference f140d0cf-bd61-4af4-a874-985f5fae898b lost")
+    assert out == "reference f140 lost"
+
+
+def test_speakable_shortens_long_hex_run():
+    assert speakable("commit deadbeefcafe4321feed") == "commit dead"
+
+
+def test_speakable_keeps_short_hex_and_words():
+    text = "commit deadbeef on branch feature-cafe"
+    assert speakable(text) == text
+
+
+def test_speakable_shortens_figma_style_key():
+    out = speakable("file key hp6VI6CyREYbtiukMR6BmN, depth 2")
+    assert out == "file key hp6V, depth 2"
+
+
+def test_speakable_shortens_epoch_ms_timestamp():
+    assert speakable("at 1787933139368 exactly") == "at 1787 exactly"
+
+
+def test_speakable_keeps_long_plain_words_and_small_numbers():
+    text = "internationalization finished at 2026, node 2113-149"
+    assert speakable(text) == text
+
+
+def test_speakable_empty_string_is_empty():
+    assert speakable("") == ""
+
+
+def test_scrub_applies_speakable_even_when_disabled():
+    out = scrub("session f140d0cf-bd61-4af4-a874-985f5fae898b", enabled=False)
+    assert out == "session f140"
+
+
+def test_scrub_secret_hex_still_redacted_not_stubbed():
+    # 40+ hex chars is secret-shaped — must stay <REDACTED>, not a 4-char stub.
+    out = scrub("commit deadbeef1234567890cafebabe1234567890aabbcc11")
+    assert "<REDACTED>" in out
