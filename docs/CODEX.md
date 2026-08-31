@@ -96,7 +96,7 @@ absolute path on your machine:
 
 ```bash
 which jarvis-hook
-# /Users/me/code/jarvis-cli/.venv/bin/jarvis-hook
+# /Users/me/code/jarvis/.venv/bin/jarvis-hook
 ```
 
 Restart Codex (or wait for its config-reload — easiest is `codex`-quit

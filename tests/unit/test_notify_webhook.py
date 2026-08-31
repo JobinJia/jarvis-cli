@@ -189,15 +189,15 @@ async def test_bark_format_builds_native_payload():
         router.post("/devkey").mock(side_effect=_handler)
         ok = await webhook.notify(
             cfg,
-            _event(cwd="/Users/me/myself/jarvis-cli"),
+            _event(cwd="/Users/me/myself/jarvis"),
             "Sir, the build is done.",
         )
 
     assert ok is True
     assert captured == {
-        "title": "Jarvis · jarvis-cli",
+        "title": "Jarvis · jarvis",
         "body": "Sir, the build is done.",
-        "group": "jarvis-cli",
+        "group": "jarvis",
         "level": "active",  # idle_prompt is not attention-needed
     }
 
@@ -270,13 +270,13 @@ async def test_ntfy_format_posts_text_body_with_headers():
         route = router.post("/some-topic").respond(200)
         ok = await webhook.notify(
             cfg,
-            _event(notification_type="tool_failure", cwd="/repo/jarvis-cli"),
+            _event(notification_type="tool_failure", cwd="/repo/jarvis"),
             "Sir, the tests have failed.",
         )
 
     assert ok is True
     request = route.calls[0].request
     assert request.content.decode() == "Sir, the tests have failed."
-    assert request.headers["Title"] == "Jarvis - jarvis-cli"
+    assert request.headers["Title"] == "Jarvis - jarvis"
     assert request.headers["Priority"] == "high"  # attention type
     assert request.headers["Tags"] == "robot"

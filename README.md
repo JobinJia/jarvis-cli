@@ -69,7 +69,7 @@ swapping providers afterwards.
 ## Install
 
 ```bash
-git clone https://github.com/JobinJia/jarvis-cli.git
+git clone https://github.com/JobinJia/jarvis.git
 cd jarvis
 
 # Pick the TTS path you want; extras are additive.

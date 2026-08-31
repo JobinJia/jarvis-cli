@@ -1,14 +1,14 @@
 """Mute state — a small JSON file the CLI writes and the daemon reads.
 
-Two scopes live here: a global mute (`jarvis-cli mute 30m`) that silences
-everything, and per-event-type mutes (`jarvis-cli events off task_complete
+Two scopes live here: a global mute (`jarvis mute 30m`) that silences
+everything, and per-event-type mutes (`jarvis events off task_complete
 2h`) that silence one kind of announcement. Both carry an expiry.
 
 Why a file rather than a field in config.toml, which already hot-reloads:
 config.toml is a hand-written preferences file, and a mute is transient
 state with a timestamp in it — `install --reconfigure` rewrites that file
 from a template and would drop or resurrect a mute either way. A separate
-file also means `jarvis-cli mute` works while the daemon is down or
+file also means `jarvis mute` works while the daemon is down or
 restarting, and that a launchd respawn (or the TTS self-heal) cannot
 silently un-mute a machine its owner muted for a meeting.
 
@@ -29,7 +29,7 @@ from typing import Any
 # the file, and no clock skew can make it lapse.
 FOREVER = "forever"
 
-# How long a bare `jarvis-cli mute` lasts. Long enough for a meeting, short
+# How long a bare `jarvis mute` lasts. Long enough for a meeting, short
 # enough that forgetting to unmute costs one afternoon, not one week.
 DEFAULT_MUTE_SECONDS = 30 * 60
 
@@ -199,7 +199,7 @@ def muted_reason(
 
 def describe(state: dict[str, Any], now: float | None = None) -> dict[str, str]:
     """What is in force right now, as {scope: human-readable expiry}, for
-    /health and `jarvis-cli status`. Empty dict when nothing is muted."""
+    /health and `jarvis status`. Empty dict when nothing is muted."""
     now = time.time() if now is None else now
     out: dict[str, str] = {}
     g = state.get("global")

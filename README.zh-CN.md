@@ -67,7 +67,7 @@ Codex CLI 的事件映射与验证步骤见 [`docs/CODEX.md`](docs/CODEX.md);之
 ## 安装
 
 ```bash
-git clone https://github.com/JobinJia/jarvis-cli.git
+git clone https://github.com/JobinJia/jarvis.git
 cd jarvis
 
 # 选择你想要的 TTS 路径;extra 是叠加式的。
