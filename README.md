@@ -291,7 +291,11 @@ No network calls of any kind. Voice quality drops; this is your true offline flo
 
 | Action | Command |
 |---|---|
-| Check daemon health | `uv run jarvis status` |
+| Check daemon health (and what is muted) | `uv run jarvis status` |
+| Silence Jarvis for a while | `uv run jarvis mute 30m` (also `1h`, `7d`, `--forever`) |
+| Let him speak again | `uv run jarvis unmute` |
+| See which event types speak | `uv run jarvis events` |
+| Silence one kind of announcement | `uv run jarvis events off task_complete` (add `2h` to make it temporary) |
 | Fire a synthetic event | `uv run jarvis test --event permission_prompt --tool Bash` |
 | Manually trigger Jarvis (LLM phrases it) | `uv run jarvis say --reason user-input-requested` |
 | Manually trigger Jarvis (read exact text) | `uv run jarvis say --text "Sir, shall we proceed?"` |
@@ -305,7 +309,7 @@ No network calls of any kind. Voice quality drops; this is your true offline flo
 
 **No sound at all.**
 
-- `uv run jarvis status` — daemon reachable?
+- `uv run jarvis status` — daemon reachable, and is `muted` empty?
 - `launchctl list | grep jarvis` — service running?
 - `tail ~/.jarvis/daemon.log` — error lines?
 - Test the leaf: `say "test"` — speakers working?

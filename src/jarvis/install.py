@@ -845,6 +845,239 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def _daemon_apply(cfg, command: str) -> bool:
+    """Push a just-written state change to a running daemon.
+
+    False when it is not reachable. Every caller stays correct without it —
+    the file on disk is the source of truth and the daemon re-reads it — so
+    an unreachable daemon is a note to the user, not a failure.
+    """
+    from .hook_client import _request_reply
+
+    reply = _request_reply(
+        cfg.paths.socket, {"command": command}, timeout_s=3.0,
+    )
+    return bool(reply and reply.get("ok"))
+
+
+def _muted_note(cfg, notification_type: str = "idle_prompt") -> str | None:
+    """A warning for commands that queue speech, when that speech will be
+    swallowed by a mute. Without it `say` prints "queued" and nothing is
+    heard, which looks exactly like the failure modes this daemon has had."""
+    from . import mute
+
+    return mute.muted_reason(mute.load(cfg.paths.mute_state), notification_type)
+
+
+def cmd_mute(args: argparse.Namespace) -> int:
+    """Silence everything for a while. Writes the state file (so it survives a
+    daemon restart and works while the daemon is down), then tells a running
+    daemon to cut whatever it is saying right now."""
+    from . import mute
+    from .config import load_config
+
+    cfg = load_config(DEFAULT_CONFIG_PATH)
+    if args.forever and args.duration:
+        print(
+            f"pass a duration or --forever, not both (got {args.duration!r})",
+            file=sys.stderr,
+        )
+        return 1
+    if args.forever:
+        seconds = None
+    else:
+        try:
+            seconds = (
+                mute.parse_duration(args.duration) if args.duration
+                else mute.DEFAULT_MUTE_SECONDS
+            )
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+
+    expiry = mute.set_global(cfg.paths.mute_state, seconds)
+    if seconds is None:
+        print("muted indefinitely — silent until `jarvis unmute`")
+    else:
+        print(
+            f"muted for {mute.format_duration(seconds)} — "
+            f"{mute.format_expiry(expiry)}; `jarvis unmute` ends it early"
+        )
+    if not _daemon_apply(cfg, "reload_mute"):
+        print("daemon not reachable — the mute holds when it next starts")
+    return 0
+
+
+def cmd_unmute(args: argparse.Namespace) -> int:
+    """Lift every mute, global and per-type."""
+    from . import mute
+    from .config import load_config
+
+    cfg = load_config(DEFAULT_CONFIG_PATH)
+    if mute.clear_all(cfg.paths.mute_state):
+        print("unmuted — Jarvis speaks again")
+    else:
+        print("nothing was muted")
+    _daemon_apply(cfg, "reload_mute")
+    return 0
+
+
+def _events_block(lines: list[str]) -> tuple[int, int]:
+    """Line range (exclusive of the brackets) of `events = [...]` inside the
+    `[behavior]` section. Raises ValueError with a user-facing message.
+
+    Scoped to `[behavior]` on purpose: `[webhook]` has an `events` list too,
+    and editing the wrong one silently changes what reaches the user's phone.
+    """
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.strip() == "[behavior]"), None,
+    )
+    if start is None:
+        raise ValueError("no [behavior] section — run `jarvis install`")
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+        len(lines),
+    )
+    open_i = next(
+        (i for i in range(start + 1, end)
+         if re.match(r"^\s*events\s*=\s*\[", lines[i])),
+        None,
+    )
+    if open_i is None:
+        raise ValueError("no `events = [` list in [behavior]")
+    if "]" in lines[open_i]:
+        raise ValueError(
+            "the [behavior].events list is written on one line; put one entry "
+            "per line (or edit it by hand) so this command can edit single "
+            "entries without rewriting your comments"
+        )
+    close_i = next(
+        (i for i in range(open_i + 1, end) if re.match(r"^\s*\]", lines[i])), None,
+    )
+    if close_i is None:
+        raise ValueError("the [behavior].events list is never closed")
+    return open_i + 1, close_i
+
+
+def _set_event_enabled(cfg_path: Path, ntype: str, enabled: bool) -> str:
+    """Turn one event type on or off in config.toml, by line surgery.
+
+    An entry is switched off by commenting it out rather than deleting it,
+    and on by uncommenting. That preserves the list's own comments — this
+    file records WHY entries are there (`task_complete` carries the note
+    about three days of silence) — and it matches how the generated config
+    already ships its opt-in Tier 2 entries: commented out, "opt in by
+    uncommenting". Returns a line describing what changed.
+    """
+    text = cfg_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    first, last = _events_block(lines)
+    on_re = re.compile(rf'^(\s*)"{re.escape(ntype)}"\s*,?\s*$')
+    off_re = re.compile(rf'^(\s*)#\s*"{re.escape(ntype)}"\s*,?\s*$')
+
+    for i in range(first, last):
+        if (m := on_re.match(lines[i])) is not None:
+            if enabled:
+                return f"{ntype} was already on"
+            lines[i] = f'{m.group(1)}# "{ntype}",\n'
+            break
+        if (m := off_re.match(lines[i])) is not None:
+            if not enabled:
+                return f"{ntype} was already off"
+            lines[i] = f'{m.group(1)}"{ntype}",\n'
+            break
+    else:
+        if not enabled:
+            return f"{ntype} was already off (not in the list)"
+        # Indent like the entry above it, falling back to the closing
+        # bracket's indent plus two.
+        indent = "  "
+        for i in range(first, last):
+            if (m := re.match(r"^(\s*)\S", lines[i])) is not None:
+                indent = m.group(1)
+                break
+        lines.insert(last, f'{indent}"{ntype}",\n')
+
+    cfg_path.write_text("".join(lines), encoding="utf-8")
+    return f"{ntype} turned {'on' if enabled else 'off'} in {cfg_path}"
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    """Show which event types speak, and switch one on or off.
+
+    `off <type>` edits config.toml and is permanent; `off <type> <duration>`
+    parks a timed mute in the state file instead and leaves config alone.
+    """
+    from typing import get_args
+
+    from . import mute
+    from .config import load_config
+    from .types import NotificationType
+
+    known = list(get_args(NotificationType))
+    cfg_path = Path(DEFAULT_CONFIG_PATH).expanduser()
+    cfg = load_config(cfg_path)
+    mute_path = cfg.paths.mute_state
+
+    if args.action is None:
+        muted = mute.describe(mute.load(mute_path))
+        blanket = muted.get("all")
+        if blanket:
+            print(f"ALL announcements are muted {blanket}\n")
+        for ntype in known:
+            on = ntype in cfg.behavior.events
+            note = f"   (muted {muted[ntype]})" if ntype in muted else ""
+            print(f"  {'on ' if on else 'off'}  {ntype}{note}")
+        print("\nturn one off:   jarvis events off task_complete")
+        print("just for a bit: jarvis events off task_complete 2h")
+        print("turn it back on: jarvis events on task_complete")
+        return 0
+
+    ntype = args.type
+    if ntype is None:
+        print(f"`events {args.action}` needs an event type", file=sys.stderr)
+        print(f"known types: {', '.join(known)}", file=sys.stderr)
+        return 1
+    if ntype not in known:
+        print(f"unknown event type {ntype!r}", file=sys.stderr)
+        print(f"known types: {', '.join(known)}", file=sys.stderr)
+        return 1
+    if args.action == "on" and args.duration:
+        print(
+            "a duration only makes sense with `off` — `events on` is "
+            "unconditional",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.action == "off" and args.duration:
+        try:
+            seconds = mute.parse_duration(args.duration)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        expiry = mute.set_type(mute_path, ntype, seconds)
+        print(
+            f"{ntype} muted for {mute.format_duration(seconds)} — "
+            f"{mute.format_expiry(expiry)} (config unchanged)"
+        )
+        _daemon_apply(cfg, "reload_mute")
+        return 0
+
+    if args.action == "on" and mute.clear_type(mute_path, ntype):
+        print(f"{ntype}: timed mute lifted")
+        _daemon_apply(cfg, "reload_mute")
+
+    try:
+        print(_set_event_enabled(cfg_path, ntype, args.action == "on"))
+    except (ValueError, OSError) as exc:
+        print(f"cannot edit {cfg_path}: {exc}", file=sys.stderr)
+        return 1
+    if not _daemon_apply(cfg, "reload_behavior"):
+        print("daemon not reachable — applies when it next starts")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     try:
         r = httpx.get("http://127.0.0.1:9527/health", timeout=1.0)
@@ -916,6 +1149,8 @@ def cmd_say(args: argparse.Namespace) -> int:
             print(f"queued say (text={args.text!r}, lang={args.lang})")
         else:
             print(f"queued say (reason={reason!r}, LLM will phrase it)")
+        if (note := _muted_note(cfg)) is not None:
+            print(f"...but you won't hear it: {note}", file=sys.stderr)
         return 0
     except OSError as exc:
         print(f"failed: {exc}", file=sys.stderr)
@@ -974,6 +1209,9 @@ def cmd_tone(args: argparse.Namespace) -> int:
     print("daemon reloaded — live now")
 
     if args.quiet:
+        return 0
+    if (note := _muted_note(cfg)) is not None:
+        print(f"no preview — {note}")
         return 0
     # Preview: a synthetic idle_prompt phrased by the LLM under the NEW
     # humor level. Unique tool_name defeats the dedup window on repeat runs.
@@ -1061,6 +1299,42 @@ def main() -> int:
         help="skip the spoken preview line after applying",
     )
     p_tone.set_defaults(func=cmd_tone)
+    p_mute = sub.add_parser(
+        "mute",
+        help="silence Jarvis for a while (default 30m; `mute 2h`, `mute 7d`)",
+    )
+    p_mute.add_argument(
+        "duration", nargs="?", default=None,
+        help="how long: 60s, 30m, 1h, 7d (a bare number means minutes); "
+        "omit for 30m",
+    )
+    p_mute.add_argument(
+        "--forever", action="store_true",
+        help="stay muted until `jarvis unmute` — no expiry",
+    )
+    p_mute.set_defaults(func=cmd_mute)
+    sub.add_parser(
+        "unmute", help="lift every mute, global and per-event-type",
+    ).set_defaults(func=cmd_unmute)
+    p_events = sub.add_parser(
+        "events",
+        help="show which event types speak; turn one on or off (permanently, "
+        "or for a duration)",
+    )
+    p_events.add_argument(
+        "action", nargs="?", choices=["on", "off"], default=None,
+        help="omit to list the current state",
+    )
+    p_events.add_argument(
+        "type", nargs="?", default=None,
+        help="event type, eg task_complete",
+    )
+    p_events.add_argument(
+        "duration", nargs="?", default=None,
+        help="with `off`: mute it for this long (60s/30m/1h/7d) instead of "
+        "editing config.toml",
+    )
+    p_events.set_defaults(func=cmd_events)
 
     from .skills.cli import add_subparser as _add_skills_subparser
 

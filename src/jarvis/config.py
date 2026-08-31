@@ -500,6 +500,10 @@ class PathsConfig:
     socket: str = "~/.jarvis/jarvis.sock"
     log: str = "~/.jarvis/daemon.log"
     missed_log: str = "~/.jarvis/missed.log"
+    # Where `jarvis mute` / `events off <type> <duration>` park the
+    # current silence, and where the daemon reads it back per event. State,
+    # not preference — see mute.py for why it is not a [behavior] field.
+    mute_state: str = "~/.jarvis/mute.json"
 
 
 @dataclass
@@ -545,6 +549,7 @@ def load_config(path: str | Path) -> Config:
     cfg.paths.socket = expanduser(cfg.paths.socket)
     cfg.paths.log = expanduser(cfg.paths.log)
     cfg.paths.missed_log = expanduser(cfg.paths.missed_log)
+    cfg.paths.mute_state = expanduser(cfg.paths.mute_state)
     cfg.tts.xtts.model_dir = expanduser(cfg.tts.xtts.model_dir)
     cfg.tts.xtts.ref_audio_zh = expanduser(cfg.tts.xtts.ref_audio_zh)
     cfg.tts.xtts.ref_audio_en = expanduser(cfg.tts.xtts.ref_audio_en)

@@ -284,7 +284,11 @@ fallback = ""
 
 | 操作 | 命令 |
 |---|---|
-| 检查守护进程健康 | `uv run jarvis status` |
+| 检查守护进程健康(以及当前静音状态) | `uv run jarvis status` |
+| 让贾维斯闭嘴一段时间 | `uv run jarvis mute 30m`(也可 `1h`、`7d`、`--forever`) |
+| 让他重新说话 | `uv run jarvis unmute` |
+| 看哪些事件会播报 | `uv run jarvis events` |
+| 只关掉某一类播报 | `uv run jarvis events off task_complete`(后面加 `2h` 就只关这么久) |
 | 发一个合成事件 | `uv run jarvis test --event permission_prompt --tool Bash` |
 | 手动触发贾维斯(由 LLM 措辞) | `uv run jarvis say --reason user-input-requested` |
 | 手动触发贾维斯(读出原文) | `uv run jarvis say --text "Sir, shall we proceed?"` |
@@ -298,7 +302,7 @@ fallback = ""
 
 **完全没有声音。**
 
-- `uv run jarvis status` —— 守护进程可达吗?
+- `uv run jarvis status` —— 守护进程可达吗?`muted` 是空的吗?
 - `launchctl list | grep jarvis` —— 服务在运行吗?
 - `tail ~/.jarvis/daemon.log` —— 有报错行吗?
 - 测试最末端:`say "test"` —— 扬声器正常吗?

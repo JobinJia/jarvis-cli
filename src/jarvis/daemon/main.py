@@ -16,6 +16,9 @@ from loguru import logger
 
 from ..briefing import WeatherCache, compose_briefing, detect_city
 from ..config import DEFAULT_CONFIG_PATH, Config, load_config
+from ..mute import describe as describe_mute
+from ..mute import load as load_mute
+from ..mute import muted_reason
 from ..notify import remote as remote_notify
 from ..notify import webhook as webhook_notify
 from ..phrase.language import detect_for
@@ -105,6 +108,11 @@ class Daemon:
         # Where `reload_behavior` re-reads from — the same file `cfg` was
         # loaded from at startup.
         self._config_path = config_path
+        # Mute state lives outside config.toml (see mute.py) and is re-read
+        # per event: the CLI can mute a running daemon with no round-trip,
+        # and a mute set while the daemon was down still holds when it comes
+        # back up.
+        self._mute_path = cfg.paths.mute_state
         self.queue = BoundedEventQueue(maxsize=cfg.behavior.queue_max_size)
         self.dedup = DedupWindow(window_seconds=cfg.behavior.dedup_window_seconds)
         # Build the fallback chain: prefer the multi-level `fallbacks` list,
@@ -233,6 +241,10 @@ class Daemon:
             "queue_capacity": self.queue.maxsize,
             "dropped": self.queue.dropped_count,
             "last_text": self._last_text,
+            # Empty unless something is muted. A silent Jarvis is otherwise
+            # indistinguishable from a broken one, and this repo has spent
+            # days on exactly that confusion — `status` must say so.
+            "muted": describe_mute(load_mute(self._mute_path)),
         }
 
     async def _announce_phrase_fallback(self, primary_name: str) -> None:
@@ -285,6 +297,12 @@ class Daemon:
 
     async def _on_event(self, event: Event) -> None:
         dkey = event.dedup_key()
+        # Mute outranks every other gate, including pre-baked `say --text`:
+        # the user asked for silence, so silence is what they get.
+        reason = muted_reason(load_mute(self._mute_path), event.notification_type)
+        if reason:
+            logger.debug("DROP {} key={}", reason, dkey)
+            return
         if event.notification_type not in self.cfg.behavior.events:
             logger.debug("DROP filtered-by-events-allowlist key={}", dkey)
             return
@@ -355,6 +373,31 @@ class Daemon:
         )
         return {"ok": True, "humor_level": fresh.behavior.humor_level}
 
+    def _apply_mute(self) -> dict:
+        """Act on a mute the CLI just wrote.
+
+        The state file alone is enough for events that have not arrived yet —
+        `_on_event` re-reads it every time. This exists for the line already
+        in the air: muting is usually a reaction to hearing something, so a
+        fresh global mute cuts the current utterance and empties the queue
+        instead of letting the backlog finish first."""
+        active = describe_mute(load_mute(self._mute_path))
+        if "all" not in active:
+            logger.info("mute state reloaded: {}", active or "nothing muted")
+            return {"ok": True, "muted": active}
+        dropped = self.queue.drop_matching(lambda _e: True)
+        proc = self._current_proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        logger.info(
+            "muted {} — cut the line in flight, dropped {} queued",
+            active["all"], dropped,
+        )
+        return {"ok": True, "muted": active, "dropped": dropped}
+
     async def _on_query(self, payload: dict) -> dict:
         """Request/response handler for the hook's skill_query / skill_refresh,
         the CLI's reload_behavior, and MCP intent matching with LLM
@@ -362,6 +405,8 @@ class Daemon:
         raises."""
         if payload.get("command") == "reload_behavior":
             return self._reload_behavior()
+        if payload.get("command") == "reload_mute":
+            return self._apply_mute()
         if payload.get("command") == "skill_refresh":
             if self.skills is not None:
                 await asyncio.to_thread(self.skills.refresh)
