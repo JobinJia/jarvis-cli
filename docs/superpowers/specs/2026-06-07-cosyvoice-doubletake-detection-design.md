@@ -14,7 +14,7 @@ The current mitigation in `CosyVoiceProvider.synthesize` measures speech rate
 (`cps = chars / audio_duration`) after synthesis and retries up to 3 times when
 `cps < 9.0`, but only for inputs `<= 80` chars (`_VALIDATION_MAX_CHARS`).
 
-## Problem (evidence from `~/.jarvis-cli/daemon.log`)
+## Problem (evidence from `~/.jarvis/daemon.log`)
 
 1. **`cps` cannot separate "repeat" from "slow speech".** The 33-char phrase
    `Sir, Claude awaits your guidance.` has a clean main peak at cps 13–16, a
@@ -103,7 +103,7 @@ repeats (a shorter diagonal) both show up, independent of speed and length.
   score) before writing to disk, so the cache only ever holds clean samples.
 - Key: `hash(text + lang + reference-audio fingerprint)` — changing the voice
   reference invalidates automatically.
-- Location: `~/.jarvis-cli/cache/tts/`. Hit → play directly, zero latency.
+- Location: `~/.jarvis/cache/tts/`. Hit → play directly, zero latency.
 
 ### 3. `tts/providers/cosyvoice.py` (modified)
 

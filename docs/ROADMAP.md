@@ -1,6 +1,6 @@
-# jarvis-cli 产品迭代路线图
+# jarvis 产品迭代路线图
 
-> 本文档是 jarvis-cli 的产品视角汇总:我们是什么、在业界处于什么位置、现有方案怎么做得更深、以及把它当产品迭代时值得加的功能。
+> 本文档是 jarvis 的产品视角汇总:我们是什么、在业界处于什么位置、现有方案怎么做得更深、以及把它当产品迭代时值得加的功能。
 > 调研时点:2026-06。状态更新:2026-07-03(streaming/情感化/事件扩展/plugin Phase 1-2 已落地)。来源见文末。
 
 ---
@@ -142,21 +142,21 @@ hook(<10ms, fire-and-forget) ──unix socket──▶ daemon(launchd KeepAlive
 Layer 1: CC Plugin (轻量,自动注册 hooks)
 ├─ .claude-plugin/plugin.json     # 元数据
 ├─ hooks/hooks.json               # ${CLAUDE_PLUGIN_ROOT} 路径,CC 自动注册
-├─ hooks/jarvis-hook.sh           # 薄 wrapper → jarvis-cli-hook
+├─ hooks/jarvis-hook.sh           # 薄 wrapper → jarvis-hook
 └─ scripts/install-daemon.sh      # 一键 bootstrap
 
 Layer 2: PyPI 包 (核心引擎)
-├─ jarvis-cli                     # core: httpx + loguru + say 兜底,零下载开箱即用
-├─ jarvis-cli[piper]              # +Piper TTS ~15MB
-├─ jarvis-cli[cosyvoice]          # 单独 pip install cosyvoice3
-├─ jarvis-cli[xtts]               # +PyTorch + coqui-tts
-└─ jarvis-cli[skills]             # +fastembed + jina 模型 ~640MB
+├─ jarvis                     # core: httpx + loguru + say 兜底,零下载开箱即用
+├─ jarvis[piper]              # +Piper TTS ~15MB
+├─ jarvis[cosyvoice]          # 单独 pip install cosyvoice3
+├─ jarvis[xtts]               # +PyTorch + coqui-tts
+└─ jarvis[skills]             # +fastembed + jina 模型 ~640MB
 ```
 
 **分阶段**:
 1. PyPI 发布(剥离 cosyvoice 直接 URL,core 只含轻量依赖)— 1-2 天
 2. CC Plugin 包装(`hooks.json` + bootstrap 脚本)— 1-2 天
-3. 升级 UX(`SessionStart` 检测 say-only 并建议升级,`jarvis-cli doctor` 诊断)— 1 天
+3. 升级 UX(`SessionStart` 检测 say-only 并建议升级,`jarvis doctor` 诊断)— 1 天
 4. 提交官方 marketplace — 持续
 
 ### 愿景 / 大投入
@@ -179,14 +179,14 @@ Layer 2: PyPI 包 (核心引擎)
 ### 第二梯队:产品增量
 
 3. **多 agent 协同感知**——orchestrate 重度使用场景,`subagent_spawned` 事件已打底,差播报内容与节流策略。
-4. **Plugin 化分发 Phase 3-4**——`jarvis-cli doctor`、say-only 升级提示、marketplace 提交。
+4. **Plugin 化分发 Phase 3-4**——`jarvis doctor`、say-only 升级提示、marketplace 提交。
 5. **中文语音重做(TODO,2026-07-11 挂起,退回英文)**——第一轮尝试整体失败,需要重新设计:
    - 第一轮的否决记录(别再走回头路,探针数据见 memory `zh-voice-architecture`):
      克隆路线(XTTS/CosyVoice + 英文 Bettany 参考)必带洋腔;CosyVoice cross_lingual 必复读;
      zero_shot 锚定止住复读但把英音克隆进普通话("伦敦中文腔");Piper huayan/chaowen、
      macOS 婷婷 AI 味重——全部被耳测否决。用户的验收标准:自然真人感的标准普通话男声。
    - 候选待验证:Kokoro-82M v1.1-zh(本地、Apache-2.0、预置母语音色、实测 RTF 0.18-0.25;
-     模型与 zm_010/zm_025/zm_031 已在 `~/.jarvis-cli/models/kokoro-zh/`,音色未经用户认可)。
+     模型与 zm_010/zm_025/zm_031 已在 `~/.jarvis/models/kokoro-zh/`,音色未经用户认可)。
      其它未探索路线:fish-speech / IndexTTS-2 本地跑 MPS 的可行性、云端 TTS(Edge 等,用户未点头)、
      用户提供中文男声样本走已验证的 CosyVoice 克隆管线。
    - 可复用的基建(这轮沉淀,与最终方案无关都能用):TTS 引擎按语言路由(`provider_zh`)、

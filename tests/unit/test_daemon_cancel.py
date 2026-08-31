@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 def _ev(sid: str | None, tool: str = "T") -> Event:
@@ -88,7 +88,7 @@ async def test_try_stream_returns_true_when_session_cancelled():
             pass
         raise RuntimeError("ffplay exited with code -9")
 
-    with patch("jarvis_cli.daemon.main.play_stream", side_effect=_fake_play_stream):
+    with patch("jarvis.daemon.main.play_stream", side_effect=_fake_play_stream):
         result = await d._try_stream("hi", "en", None, session_id="abc")
 
     assert result is True
@@ -116,7 +116,7 @@ async def test_try_stream_returns_false_on_real_tts_failure():
             pass
         raise RuntimeError("elevenlabs 500")
 
-    with patch("jarvis_cli.daemon.main.play_stream", side_effect=_fake_play_stream):
+    with patch("jarvis.daemon.main.play_stream", side_effect=_fake_play_stream):
         result = await d._try_stream("hi", "en", None, session_id="other-sid")
 
     assert result is False
@@ -151,7 +151,7 @@ async def test_worker_skips_play_when_cancelled_during_synth():
         nonlocal play_calls
         play_calls += 1
 
-    with patch("jarvis_cli.daemon.main.play", side_effect=_fake_play):
+    with patch("jarvis.daemon.main.play", side_effect=_fake_play):
         await d._process_one(ev)
 
     assert play_calls == 0
@@ -259,7 +259,7 @@ async def test_worker_plays_exempt_event_despite_pending_cancel():
         nonlocal play_calls
         play_calls += 1
 
-    with patch("jarvis_cli.daemon.main.play", side_effect=_fake_play):
+    with patch("jarvis.daemon.main.play", side_effect=_fake_play):
         await d._process_one(ev)
 
     assert play_calls == 1

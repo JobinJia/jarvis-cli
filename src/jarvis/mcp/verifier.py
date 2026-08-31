@@ -1,7 +1,7 @@
 """MCP intent verification — re-exports the generic verifier.
 
 All logic lives in ``retrieval.verifier``; this module keeps the existing
-import path (``from jarvis_cli.mcp.verifier import verify_candidates``)
+import path (``from jarvis.mcp.verifier import verify_candidates``)
 working. MCP callers pass ``noun="tool server"`` (the default).
 """
 from ..retrieval.verifier import (

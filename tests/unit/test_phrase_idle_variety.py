@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.phrase.prompt import _IDLE_FLAVORS, build_messages
-from jarvis_cli.phrase.providers.base import PhraseProvider
-from jarvis_cli.phrase.router import PhraseRouter
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.phrase.prompt import _IDLE_FLAVORS, build_messages
+from jarvis.phrase.providers.base import PhraseProvider
+from jarvis.phrase.router import PhraseRouter
+from jarvis.types import Event
 
 
 def _idle_event() -> Event:

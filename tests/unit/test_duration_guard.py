@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis_cli.tts.duration_guard import DurationBaseline
+from jarvis.tts.duration_guard import DurationBaseline
 
 
 def _guard(tmp_path: Path) -> DurationBaseline:

@@ -32,7 +32,7 @@ class Embedder:
             from fastembed import TextEmbedding
         except ImportError as exc:
             raise EmbedderUnavailable(
-                "fastembed not installed; install jarvis-cli[skills]"
+                "fastembed not installed; install jarvis[skills]"
             ) from exc
         logger.info(
             "retrieval: loading embedding model {} (cache={})",

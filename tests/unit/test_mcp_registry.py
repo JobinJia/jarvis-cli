@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from jarvis_cli.mcp.registry import (
+from jarvis.mcp.registry import (
     McpServerRecord,
     load_registry,
     save_registry,
@@ -96,6 +96,6 @@ def test_content_hash_changes_with_description():
     r1 = load_registry.__wrapped__ if hasattr(load_registry, "__wrapped__") else None  # noqa
     rec_a = McpServerRecord(name="s", description="alpha", keywords=[])
     rec_b = McpServerRecord(name="s", description="beta", keywords=[])
-    from jarvis_cli.mcp.registry import _compute_hash
+    from jarvis.mcp.registry import _compute_hash
 
     assert _compute_hash(rec_a) != _compute_hash(rec_b)

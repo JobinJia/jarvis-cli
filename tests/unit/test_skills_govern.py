@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from jarvis_cli.skills.catalog import scan_skills
-from jarvis_cli.skills.govern import (
+from jarvis.skills.catalog import scan_skills
+from jarvis.skills.govern import (
     GovernPaths,
     apply_governance,
     build_plan,

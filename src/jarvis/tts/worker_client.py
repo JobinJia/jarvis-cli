@@ -73,7 +73,7 @@ class WorkerProvider(TTSProvider):
         if proc is not None and proc.returncode is None:
             return proc
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "jarvis_cli.tts.worker",
+            sys.executable, "-m", "jarvis.tts.worker",
             "--provider", self.name, "--config", self._config_path,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

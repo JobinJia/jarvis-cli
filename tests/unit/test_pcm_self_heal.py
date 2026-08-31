@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 def _event(sid: str = "s1") -> Event:
@@ -31,7 +31,7 @@ def _event(sid: str = "s1") -> Event:
 @pytest.mark.asyncio
 async def test_no_restart_without_a_wedge():
     d = Daemon(Config())
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
     hard_exit.assert_not_called()
 
@@ -42,7 +42,7 @@ async def test_wedge_on_a_long_lived_daemon_restarts_it():
     d._note_pcm_wedge("device release stuck past 5.0s")
     d._started_at -= 3600.0  # an hour of healthy playback before the wedge
 
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
 
     hard_exit.assert_called_once_with(1)
@@ -56,7 +56,7 @@ async def test_wedge_early_in_the_process_does_not_restart():
     d = Daemon(Config())
     d._note_pcm_wedge("device open stuck past 5.0s")  # seconds into the process
 
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
 
     hard_exit.assert_not_called()
@@ -71,7 +71,7 @@ async def test_restart_waits_for_the_queue_to_drain():
     d._started_at -= 3600.0
     await d.queue.put_or_drop(_event())
 
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
         hard_exit.assert_not_called()
         assert d._self_heal_checked is False  # still pending, not ruled out
@@ -89,7 +89,7 @@ async def test_declined_restart_is_decided_once():
     d = Daemon(Config())
     d._note_pcm_wedge("device open stuck past 5.0s")
 
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
         assert d._self_heal_checked is True
         d._started_at -= 3600.0  # crossing the floor later must not revive it
@@ -110,7 +110,7 @@ async def test_first_wedge_reason_is_the_one_reported():
 
 def test_daemon_registers_itself_for_wedge_notifications():
     """Without this wiring the self-heal never fires at all."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     with patch.object(player_mod, "_wedge_callback", None):
         d = Daemon(Config())
@@ -136,7 +136,7 @@ async def test_restart_drains_in_flight_pushes_first():
 
     d._webhook_tasks.add(asyncio.create_task(_push()))
 
-    with patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
 
     hard_exit.assert_called_once_with(1)
@@ -154,8 +154,8 @@ async def test_restart_is_not_held_hostage_by_a_hung_push():
     hung = asyncio.create_task(asyncio.sleep(3600))
     d._webhook_tasks.add(hung)
 
-    with patch("jarvis_cli.daemon.main._SELF_HEAL_PUSH_DRAIN_SECONDS", 0.05), \
-            patch("jarvis_cli.daemon.main.os._exit") as hard_exit:
+    with patch("jarvis.daemon.main._SELF_HEAL_PUSH_DRAIN_SECONDS", 0.05), \
+            patch("jarvis.daemon.main.os._exit") as hard_exit:
         await d._self_heal_if_wedged()
 
     hard_exit.assert_called_once_with(1)

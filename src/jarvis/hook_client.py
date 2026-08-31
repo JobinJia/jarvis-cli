@@ -20,7 +20,7 @@ from .config import DEFAULT_CONFIG_PATH, load_config
 # CC's PreToolUse(AskUserQuestion) payload has no `notification_type` field
 # — the listener would drop it. We translate it here into a daemon event
 # whose `text` is pre-baked, so synthesis skips the LLM (the daemon already
-# special-cases `text=...` for the manual `jarvis-cli say --text` path).
+# special-cases `text=...` for the manual `jarvis say --text` path).
 #
 # Output language is governed by `behavior.voice_language` ("en" | "zh" |
 # "auto"). Default is "en" — the user's chosen British voice identity.
@@ -29,7 +29,7 @@ _EN_ORDINALS = ("Option one", "Option two", "Option three", "Option four")
 _ZH_ORDINALS = ("选项一", "选项二", "选项三", "选项四")
 
 
-_CODEX_SESSIONS_DIR = Path(os.path.expanduser("~/.jarvis-cli/.codex-sessions"))
+_CODEX_SESSIONS_DIR = Path(os.path.expanduser("~/.jarvis/.codex-sessions"))
 
 
 def _is_first_codex_turn(thread_id: str) -> bool:
@@ -588,7 +588,7 @@ def maybe_inject_skills(raw: str, cfg) -> None:
 
 
 def main() -> int:
-    """Entry point registered as `jarvis-cli-hook` console_script.
+    """Entry point registered as `jarvis-hook` console_script.
 
     Must NEVER raise — Claude Code reads stdout for hook decisions and a
     traceback would corrupt that channel. All failures are silent and

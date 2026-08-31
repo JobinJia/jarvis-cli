@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 def _llm_event(
@@ -143,7 +143,7 @@ async def test_prewarm_briefing_falls_back_to_detected_city():
 
     with patch.object(d._weather_cache, "get", new=AsyncMock()) as get, \
             patch(
-                "jarvis_cli.daemon.main.detect_city", return_value="Metropolis",
+                "jarvis.daemon.main.detect_city", return_value="Metropolis",
             ):
         await d._prewarm_briefing()
 

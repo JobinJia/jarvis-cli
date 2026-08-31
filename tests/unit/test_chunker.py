@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis_cli.phrase.chunker import chunk_sentences
+from jarvis.phrase.chunker import chunk_sentences
 
 
 async def _collect(parts: list[str]) -> list[str]:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from jarvis_cli.phrase.language import detect_for
+from jarvis.phrase.language import detect_for
 
 
 def test_detect_returns_zh_when_cwd_has_chinese_claude_md(tmp_path: Path):

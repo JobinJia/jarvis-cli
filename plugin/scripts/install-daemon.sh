@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "Installing jarvis-cli..."
+echo "Installing jarvis..."
 if command -v uv &>/dev/null; then
-    uv tool install jarvis-cli
+    uv tool install jarvis
 elif command -v pipx &>/dev/null; then
-    pipx install jarvis-cli
+    pipx install jarvis
 else
-    pip install --user jarvis-cli
+    pip install --user jarvis
 fi
-jarvis-cli install --non-interactive
+jarvis install --non-interactive
 echo "Jarvis is ready, sir."

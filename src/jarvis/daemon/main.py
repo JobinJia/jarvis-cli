@@ -206,7 +206,7 @@ class Daemon:
             except ImportError as exc:
                 logger.warning(
                     "retrieval stack unavailable ({}); "
-                    "install jarvis-cli[skills]", exc,
+                    "install jarvis[skills]", exc,
                 )
         if cfg.skills.enabled and _embedder is not None:
             try:
@@ -216,7 +216,7 @@ class Daemon:
                 logger.info("skills: retrieval enabled")
             except ImportError as exc:
                 logger.warning(
-                    "skills deps missing ({}); install jarvis-cli[skills]", exc,
+                    "skills deps missing ({}); install jarvis[skills]", exc,
                 )
         if cfg.mcp.enabled and _embedder is not None:
             try:
@@ -1162,7 +1162,7 @@ class Daemon:
           genuinely reachable and all of them are warmed.
 
         An override for a language the setting never picks is reachable only
-        through an explicitly pre-baked event (`jarvis-cli say --lang zh`) —
+        through an explicitly pre-baked event (`jarvis say --lang zh`) —
         rare enough to pay the cold start on.
         """
         voice_lang = self.cfg.behavior.voice_language
@@ -1251,7 +1251,7 @@ class Daemon:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="jarvis-cli-daemon")
+    parser = argparse.ArgumentParser(prog="jarvis-daemon")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--health-port", type=int, default=9527)
     args = parser.parse_args()

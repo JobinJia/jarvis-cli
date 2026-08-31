@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cli.config import CosyVoiceConfig
-from jarvis_cli.tts.providers.cosyvoice import CosyVoiceProvider
+from jarvis.config import CosyVoiceConfig
+from jarvis.tts.providers.cosyvoice import CosyVoiceProvider
 
 
 @pytest.mark.asyncio

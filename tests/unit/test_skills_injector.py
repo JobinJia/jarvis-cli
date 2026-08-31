@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from jarvis_cli.skills.catalog import SkillRecord
-from jarvis_cli.skills.injector import (
+from jarvis.skills.catalog import SkillRecord
+from jarvis.skills.injector import (
     InjectionPolicy,
     build_clarify,
     build_injection,
     gate_matches,
 )
-from jarvis_cli.skills.retriever import Match
+from jarvis.skills.retriever import Match
 
 
 def _rec(name: str, tmp: Path, body: str = "BODY-CONTENT") -> SkillRecord:

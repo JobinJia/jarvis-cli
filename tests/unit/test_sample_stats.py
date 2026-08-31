@@ -1,7 +1,7 @@
 """Tests for the double-take sample summarizer (duration-ratio monitoring)."""
 from __future__ import annotations
 
-from jarvis_cli.tts.sample_stats import summarize
+from jarvis.tts.sample_stats import summarize
 
 
 def test_summarize_groups_by_text_and_reports_ratio_spread():

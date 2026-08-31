@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cli.player import play
+from jarvis.player import play
 
 
 @pytest.mark.asyncio
@@ -31,7 +31,7 @@ async def test_play_invokes_afplay_with_path(tmp_path: Path):
 
         return _P()
 
-    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         await play(audio)
 
     assert calls[0] == ("afplay", str(audio))
@@ -41,7 +41,7 @@ async def test_play_invokes_afplay_with_path(tmp_path: Path):
 async def test_play_stream_pipes_chunks_to_ffplay():
     """play_stream(chunks) spawns ffplay reading from stdin and feeds each
     chunk as it arrives — first audio plays before the iterator finishes."""
-    from jarvis_cli.player import play_stream
+    from jarvis.player import play_stream
 
     written: list[bytes] = []
     closed = {"value": False}
@@ -81,7 +81,7 @@ async def test_play_stream_pipes_chunks_to_ffplay():
         yield b"chunk-B"
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         await play_stream(_chunks())
 
@@ -97,7 +97,7 @@ async def test_play_stream_pipes_chunks_to_ffplay():
 
 @pytest.mark.asyncio
 async def test_play_stream_raises_when_ffplay_fails():
-    from jarvis_cli.player import play_stream
+    from jarvis.player import play_stream
 
     async def _fake_exec(*args, **kwargs):
         class _Stdin:
@@ -130,7 +130,7 @@ async def test_play_stream_raises_when_ffplay_fails():
         yield b"x"
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         with pytest.raises(RuntimeError):
             await play_stream(_chunks())
@@ -154,7 +154,7 @@ async def test_play_invokes_on_spawn_with_proc(tmp_path: Path):
     async def _fake_exec(*args, **kwargs):
         return _P()
 
-    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         await play(audio, on_spawn=seen.append)
 
     assert len(seen) == 1
@@ -163,7 +163,7 @@ async def test_play_invokes_on_spawn_with_proc(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_play_stream_invokes_on_spawn_with_proc():
-    from jarvis_cli.player import play_stream
+    from jarvis.player import play_stream
     seen = []
 
     class _Stdin:
@@ -186,7 +186,7 @@ async def test_play_stream_invokes_on_spawn_with_proc():
         yield b"x"
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         await play_stream(_chunks(), on_spawn=seen.append)
 
@@ -198,7 +198,7 @@ async def test_play_stream_invokes_on_spawn_with_proc():
 async def test_stream_player_one_proc_across_multiple_feeds():
     """The whole point of StreamPlayer: several chunk iterators (per-sentence
     TTS streams) flow through ONE ffplay pipe — no per-sentence respawn gap."""
-    from jarvis_cli.player import StreamPlayer
+    from jarvis.player import StreamPlayer
 
     written: list[bytes] = []
     closed = {"value": False}
@@ -237,7 +237,7 @@ async def test_stream_player_one_proc_across_multiple_feeds():
         yield data
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         player = await StreamPlayer.spawn()
         await player.feed(_sentence(b"first."))
@@ -251,7 +251,7 @@ async def test_stream_player_one_proc_across_multiple_feeds():
 
 @pytest.mark.asyncio
 async def test_stream_player_close_raises_on_nonzero_exit():
-    from jarvis_cli.player import StreamPlayer
+    from jarvis.player import StreamPlayer
 
     class _Stdin:
         async def drain(self): return None
@@ -271,7 +271,7 @@ async def test_stream_player_close_raises_on_nonzero_exit():
         return _P()
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         player = await StreamPlayer.spawn()
         with pytest.raises(RuntimeError):
@@ -282,7 +282,7 @@ async def test_stream_player_close_raises_on_nonzero_exit():
 async def test_stream_player_abort_never_raises():
     """abort() is the error-path cleanup — a dead process (ProcessLookupError
     from kill) must be swallowed, not mask the exception being handled."""
-    from jarvis_cli.player import StreamPlayer
+    from jarvis.player import StreamPlayer
 
     class _Stdin:
         async def drain(self): return None
@@ -304,7 +304,7 @@ async def test_stream_player_abort_never_raises():
         return _P()
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         player = await StreamPlayer.spawn()
         await player.abort()  # must not raise
@@ -314,7 +314,7 @@ async def test_stream_player_abort_never_raises():
 async def test_stream_player_spawn_passes_input_args_before_pipe():
     """Headerless streams (XTTS raw PCM) need decode flags positioned before
     `-i pipe:0`, or ffplay misparses the byte stream."""
-    from jarvis_cli.player import StreamPlayer
+    from jarvis.player import StreamPlayer
 
     class _Stdin:
         async def drain(self): return None
@@ -336,7 +336,7 @@ async def test_stream_player_spawn_passes_input_args_before_pipe():
         return _P()
 
     with patch(
-        "jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
+        "jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec
     ):
         await StreamPlayer.spawn(input_args=("-f", "s16le"))
 
@@ -362,7 +362,7 @@ async def test_play_raises_when_afplay_fails(tmp_path: Path):
 
         return _P()
 
-    with patch("jarvis_cli.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
+    with patch("jarvis.player.asyncio.create_subprocess_exec", side_effect=_fake_exec):
         with pytest.raises(RuntimeError):
             await play(audio)
 
@@ -433,7 +433,7 @@ async def test_pcm_player_spawn_opens_stream_with_pcm_spec():
     with the provider's rate/channels and hand the player itself to on_spawn
     (the daemon's cancel-registration hook). Start is deferred until the
     prebuffer fills so the callback never begins by starving."""
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     seen = []
@@ -452,7 +452,7 @@ async def test_pcm_player_spawn_opens_stream_with_pcm_spec():
 async def test_pcm_player_starts_only_after_prebuffer():
     """Playback must not start until PREBUFFER_SECONDS of audio is queued —
     the lead is what rides out sentence-piece prefill stalls."""
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
@@ -477,7 +477,7 @@ async def test_pcm_player_close_drains_via_callback_and_pads_underrun():
     """close() force-starts short utterances, waits for the callback to
     drain the ring buffer, then stops. A starving callback pads with silence
     (zeros) — never raises, never clicks."""
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     async def _chunks():
         yield b"\x07\x07"
@@ -509,7 +509,7 @@ async def test_pcm_player_kill_aborts_and_close_stays_quiet():
     """kill() is the daemon's synchronous cancel hook: discard buffered audio,
     never raise (even twice); a close() after kill concludes quietly — the
     playback was cancelled, not failed."""
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
@@ -539,8 +539,8 @@ async def test_pcm_player_kill_survives_wedged_device():
     wait). kill() fires on the daemon's cancel path — the event loop — so it
     must return immediately anyway, and close() must give up after
     RELEASE_TIMEOUT_SECONDS instead of freezing the speech queue with it."""
-    import jarvis_cli.player as player_mod
-    from jarvis_cli.player import PCMPlayer
+    import jarvis.player as player_mod
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     unwedge = threading.Event()
@@ -572,8 +572,8 @@ async def test_pcm_release_leak_wedges_process_and_open_pcm_sink_falls_back():
     than handing back an ffplay pipe, because feeding raw PCM into ffplay
     truncates it (see pcm_sink_unusable). The daemon turns that refusal into
     synth+afplay."""
-    import jarvis_cli.player as player_mod
-    from jarvis_cli.player import PCMPlayer
+    import jarvis.player as player_mod
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     unwedge = threading.Event()
@@ -586,7 +586,7 @@ async def test_pcm_release_leak_wedges_process_and_open_pcm_sink_falls_back():
 
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}), \
             patch.object(player_mod, "_pcm_wedged", False), \
-            patch("jarvis_cli.player.StreamPlayer", _FakeStreamPlayer):
+            patch("jarvis.player.StreamPlayer", _FakeStreamPlayer):
         player = await PCMPlayer.spawn(rate=24000, channels=1)
         stream = created[0]
         stream.abort = unwedge.wait  # release wedges like the real deadlock
@@ -609,8 +609,8 @@ async def test_pcm_player_spawn_bounded_when_open_wedges():
     must give up after OPEN_TIMEOUT_SECONDS (raising so the caller falls back
     to ffplay), mark the process wedged — and when the stuck open eventually
     completes, release the never-used stream instead of leaking it open."""
-    import jarvis_cli.player as player_mod
-    from jarvis_cli.player import PCMPlayer
+    import jarvis.player as player_mod
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     unwedge = threading.Event()
@@ -648,7 +648,7 @@ async def test_pcm_player_feed_after_kill_propagates():
     """After an external kill() feed must raise, and the daemon lets that
     propagate — the error is how it distinguishes cancel from TTS failure
     (mirroring ffplay's broken pipe)."""
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     async def _chunks():
         yield b"too late"
@@ -663,7 +663,7 @@ async def test_pcm_player_feed_after_kill_propagates():
 
 @pytest.mark.asyncio
 async def test_pcm_player_abort_never_raises():
-    from jarvis_cli.player import PCMPlayer
+    from jarvis.player import PCMPlayer
 
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
@@ -676,7 +676,7 @@ async def test_pcm_player_abort_never_raises():
 
 @pytest.mark.asyncio
 async def test_open_pcm_sink_prefers_pcm_player():
-    from jarvis_cli.player import PCMPlayer, open_pcm_sink
+    from jarvis.player import PCMPlayer, open_pcm_sink
 
     created: list[_FakeRawStream] = []
     with patch.dict(sys.modules, {"sounddevice": _fake_sounddevice(created)}):
@@ -692,12 +692,12 @@ async def test_missing_sounddevice_raises_latches_and_warns_once():
     RAISE rather than degrade to ffplay — that fallback is what truncated
     speech on 2026-08-25 — latch the process as unusable so callers stop
     trying, and nag exactly once, not per utterance."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     # sys.modules[name] = None makes `import sounddevice` raise ImportError.
     with patch.dict(sys.modules, {"sounddevice": None}), \
-            patch("jarvis_cli.player.StreamPlayer") as stream_player, \
-            patch("jarvis_cli.player.logger") as fake_logger, \
+            patch("jarvis.player.StreamPlayer") as stream_player, \
+            patch("jarvis.player.logger") as fake_logger, \
             patch.object(player_mod, "_pcm_fallback_warned", False), \
             patch.object(player_mod, "_pcm_unavailable", False):  # process-wide
         for _ in range(2):
@@ -716,7 +716,7 @@ async def test_transient_device_error_does_not_latch():
     the behaviour on 2026-08-25) strands the daemon on synth+afplay for the
     rest of its life over a glitch that heals in seconds. Only an
     unimportable sounddevice is permanent."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     class _FakePortAudioError(Exception):
         pass
@@ -738,7 +738,7 @@ async def test_wedge_notifies_registered_callback_once():
     """The daemon self-heals off this callback, so a wedge must reach it —
     and only on the first wedge, since every later playback re-reports the
     same stuck device and one restart settles all of them."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     seen: list[str] = []
     with patch.object(player_mod, "_pcm_wedged", False), \
@@ -757,7 +757,7 @@ async def test_wedge_notifies_registered_callback_once():
 async def test_wedge_callback_failure_never_breaks_playback():
     """The callback runs inside the audio path. A bug in it must not turn a
     degraded-but-audible daemon into a crashing one."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     def _boom(_reason: str) -> None:
         raise RuntimeError("self-heal is broken")
@@ -775,7 +775,7 @@ async def test_wedge_callback_failure_never_breaks_playback():
 def test_pcm_sink_unusable_reports_wedge_and_missing_device():
     """Both routes to "no PortAudio here" must read the same to callers —
     they make the identical decision (don't stream) either way."""
-    import jarvis_cli.player as player_mod
+    import jarvis.player as player_mod
 
     with patch.object(player_mod, "_pcm_wedged", False), \
             patch.object(player_mod, "_pcm_unavailable", False):

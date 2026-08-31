@@ -1,5 +1,5 @@
-from jarvis_cli.daemon.dedup import DedupWindow
-from jarvis_cli.types import Event
+from jarvis.daemon.dedup import DedupWindow
+from jarvis.types import Event
 
 
 def _ev(t: float, tool: str = "Bash", cwd: str = "/x") -> Event:

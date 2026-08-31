@@ -8,7 +8,7 @@ ratio (actual / expected-clean) spread, so you can see which texts run long
 
 Run it with:
 
-    python -m jarvis_cli.tts.sample_stats [sample_dir]
+    python -m jarvis.tts.sample_stats [sample_dir]
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def main() -> None:
     ap.add_argument(
         "sample_dir",
         nargs="?",
-        default="~/.jarvis-cli/cache/samples",
+        default="~/.jarvis/cache/samples",
         help="directory of *.json sample sidecars",
     )
     args = ap.parse_args()

@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 @pytest.mark.asyncio
@@ -42,7 +42,7 @@ async def test_daemon_handles_event_end_to_end(tmp_path: Path, monkeypatch, no_s
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
     no_stream_tts(d)
-    monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
+    monkeypatch.setattr("jarvis.daemon.main.play", fake_play)
 
     task = asyncio.create_task(d.run())
     # wait for socket
@@ -106,7 +106,7 @@ async def test_daemon_dedups_within_window(tmp_path: Path, monkeypatch, no_strea
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
     no_stream_tts(d)
-    monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
+    monkeypatch.setattr("jarvis.daemon.main.play", fake_play)
 
     task = asyncio.create_task(d.run())
     for _ in range(100):

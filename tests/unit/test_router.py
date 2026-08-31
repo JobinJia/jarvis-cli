@@ -2,10 +2,10 @@ from typing import Literal
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.phrase.providers.base import PhraseProvider
-from jarvis_cli.phrase.router import PhraseRouter
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.phrase.providers.base import PhraseProvider
+from jarvis.phrase.router import PhraseRouter
+from jarvis.types import Event
 
 
 class _Stub(PhraseProvider):

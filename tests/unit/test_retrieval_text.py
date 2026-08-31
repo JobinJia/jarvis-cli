@@ -1,4 +1,4 @@
-from jarvis_cli.retrieval.text import deslug, lexical_tokens
+from jarvis.retrieval.text import deslug, lexical_tokens
 
 
 def test_deslug_handles_separators_and_camel():

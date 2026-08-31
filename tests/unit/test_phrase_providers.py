@@ -2,16 +2,16 @@ import httpx
 import pytest
 import respx
 
-from jarvis_cli.config import (
+from jarvis.config import (
     DeepSeekConfig,
     OllamaConfig,
     SiliconFlowConfig,
     ZhipuConfig,
 )
-from jarvis_cli.phrase.providers.deepseek import DeepSeekProvider
-from jarvis_cli.phrase.providers.ollama import OllamaProvider
-from jarvis_cli.phrase.providers.siliconflow import SiliconFlowProvider
-from jarvis_cli.phrase.providers.zhipu import ZhipuProvider
+from jarvis.phrase.providers.deepseek import DeepSeekProvider
+from jarvis.phrase.providers.ollama import OllamaProvider
+from jarvis.phrase.providers.siliconflow import SiliconFlowProvider
+from jarvis.phrase.providers.zhipu import ZhipuProvider
 
 _MESSAGES = [
     {"role": "system", "content": "you are jarvis"},

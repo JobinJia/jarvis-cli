@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 import respx
 
-from jarvis_cli.config import ElevenLabsConfig
-from jarvis_cli.tts.providers.elevenlabs import ElevenLabsProvider
+from jarvis.config import ElevenLabsConfig
+from jarvis.tts.providers.elevenlabs import ElevenLabsProvider
 
 
 @pytest.mark.asyncio

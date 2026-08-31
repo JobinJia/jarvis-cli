@@ -1,4 +1,4 @@
-"""`jarvis-cli mcp <status|query|register|unregister>` — MCP server registry.
+"""`jarvis mcp <status|query|register|unregister>` — MCP server registry.
 
 ``status`` lists registered servers; ``query`` tests intent matching against
 the registry; ``register``/``unregister`` manage entries.
@@ -74,7 +74,7 @@ def _cmd_register(args: argparse.Namespace, cfg) -> int:
     )
     records.append(rec)
     save_registry(records, cfg.mcp.registry_path)
-    print(f"registered {args.name!r}. Re-run `jarvis-cli mcp index` to rebuild embeddings.")
+    print(f"registered {args.name!r}. Re-run `jarvis mcp index` to rebuild embeddings.")
     return 0
 
 
@@ -86,7 +86,7 @@ def _cmd_unregister(args: argparse.Namespace, cfg) -> int:
         print(f"server {args.name!r} not found in registry.")
         return 1
     save_registry(records, cfg.mcp.registry_path)
-    print(f"removed {args.name!r}. Re-run `jarvis-cli mcp index` to rebuild embeddings.")
+    print(f"removed {args.name!r}. Re-run `jarvis mcp index` to rebuild embeddings.")
     return 0
 
 

@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.hook_client import forward_event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.hook_client import forward_event
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_hook_to_daemon_smoke(tmp_path: Path, monkeypatch, no_stream_tts):
     d.router.phrase = fake_phrase  # type: ignore[assignment]
     d.tts.synthesize = fake_synth  # type: ignore[assignment]
     no_stream_tts(d)
-    monkeypatch.setattr("jarvis_cli.daemon.main.play", fake_play)
+    monkeypatch.setattr("jarvis.daemon.main.play", fake_play)
 
     daemon_task = asyncio.create_task(d.run())
     for _ in range(100):

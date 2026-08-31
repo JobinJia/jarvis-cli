@@ -14,7 +14,7 @@ triggers a full Jarvis briefing — plus permission prompts, idle reminders, and
 question announcements as it runs. Dispatching N tasks produces N briefings.
 
 In-process subagents (Agent tool) are not affected: `SessionStart` only fires
-for the main session (subagents get `SubagentStart`, which jarvis-cli does not
+for the main session (subagents get `SubagentStart`, which jarvis does not
 listen to), so they need no handling.
 
 ## Decision
@@ -40,7 +40,7 @@ Rejected alternatives:
 
 ## Changes
 
-### 1. `src/jarvis_cli/hook_client.py`
+### 1. `src/jarvis/hook_client.py`
 
 At the top of `forward_event()`: if `os.environ.get("JARVIS_MUTE")` is
 non-empty and not `"0"`/`"false"` (case-insensitive), return `False`

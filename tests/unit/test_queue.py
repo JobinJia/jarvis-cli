@@ -1,7 +1,7 @@
 import pytest
 
-from jarvis_cli.daemon.queue import BoundedEventQueue
-from jarvis_cli.types import Event
+from jarvis.daemon.queue import BoundedEventQueue
+from jarvis.types import Event
 
 
 def _ev(i: int) -> Event:

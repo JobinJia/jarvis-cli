@@ -1,4 +1,4 @@
-# jarvis-cli
+# jarvis
 
 [English](README.md) | **简体中文**
 
@@ -21,12 +21,12 @@
 Claude Code ──Notification / PreToolUse hooks──┐
             └ UserPromptSubmit / PostToolUse ──┤
                                                │
-Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-cli-hook (one-shot, <10ms)
+Codex CLI   ──PermissionRequest / PreToolUse ──┤──► jarvis-hook (one-shot, <10ms)
             └ UserPromptSubmit / PostToolUse ──┤
             └ notify (agent-turn-complete) ────┘
                                                 │
                                                 ▼ Unix socket
-                                    jarvis-cli-daemon (launchd, KeepAlive)
+                                    jarvis-daemon (launchd, KeepAlive)
                                                 │
                           ┌─────────────────────┴─────────────────────┐
                           ▼                                           ▼
@@ -68,7 +68,7 @@ Codex CLI 的事件映射与验证步骤见 [`docs/CODEX.md`](docs/CODEX.md);之
 
 ```bash
 git clone https://github.com/JobinJia/jarvis-cli.git
-cd jarvis-cli
+cd jarvis
 
 # 选择你想要的 TTS 路径;extra 是叠加式的。
 uv sync --extra cosyvoice          # 推荐
@@ -92,15 +92,15 @@ source ~/.zshrc
 然后:
 
 ```bash
-uv run jarvis-cli install
+uv run jarvis install
 ```
 
 它会:
 
-1. 创建 `~/.jarvis-cli/{voices,models,logs}/`。
-2. 若不存在则写入默认的 `~/.jarvis-cli/config.toml`。
-3. 修补 `~/.claude/settings.json`,注册 `Notification`、`PreToolUse`、`UserPromptSubmit`、`PostToolUse` hook,指向项目 venv 中 `jarvis-cli-hook` 的绝对路径。若存在 `~/.codex/`,同样修补 `~/.codex/config.toml`,加入等价的 Codex 生命周期 hook 以及 `notify`(以哨兵注释围栏、幂等;见 [`docs/CODEX.md`](docs/CODEX.md))。
-4. 写入 `~/Library/LaunchAgents/com.jobin.jarvis-cli.plist`,并嵌入你的 API key。仅当 CosyVoice 用户同时启用了 XTTS 路径时才需要 `COQUI_TOS_AGREED=1`(XTTS 内部使用 Coqui-TTS)。
+1. 创建 `~/.jarvis/{voices,models,logs}/`。
+2. 若不存在则写入默认的 `~/.jarvis/config.toml`。
+3. 修补 `~/.claude/settings.json`,注册 `Notification`、`PreToolUse`、`UserPromptSubmit`、`PostToolUse` hook,指向项目 venv 中 `jarvis-hook` 的绝对路径。若存在 `~/.codex/`,同样修补 `~/.codex/config.toml`,加入等价的 Codex 生命周期 hook 以及 `notify`(以哨兵注释围栏、幂等;见 [`docs/CODEX.md`](docs/CODEX.md))。
+4. 写入 `~/Library/LaunchAgents/com.jobin.jarvis.plist`,并嵌入你的 API key。仅当 CosyVoice 用户同时启用了 XTTS 路径时才需要 `COQUI_TOS_AGREED=1`(XTTS 内部使用 Coqui-TTS)。
 5. `launchctl load` 该 plist——守护进程立即启动,并在每次登录时启动。
 
 ### TTS 模型准备
@@ -110,11 +110,11 @@ uv run jarvis-cli install
 ```bash
 # 下载 Candle 格式权重(磁盘占用约 4.7GB)
 uv run hf download spensercai/CosyVoice3-0.5B-Candle \
-  --local-dir ~/.jarvis-cli/models/cosyvoice3-0.5b-candle
+  --local-dir ~/.jarvis/models/cosyvoice3-0.5b-candle
 
 # 提供一段英文参考音频——10-30 秒你想克隆的声音的干净语音
 #(例如从播客或采访里截取)。
-# 保存到 ~/.jarvis-cli/voices/jarvis_en.wav(单声道 WAV,推荐约 22050Hz)。
+# 保存到 ~/.jarvis/voices/jarvis_en.wav(单声道 WAV,推荐约 22050Hz)。
 ```
 
 把这段参考音频的文字稿填入 `config.toml` 的 `[tts.cosyvoice] ref_text_en`——没有它,CosyVoice 会退回到 `inference_cross_lingual`,这会让短句听起来明显重复。
@@ -128,12 +128,12 @@ uv run hf download spensercai/CosyVoice3-0.5B-Candle \
 
 现在**重启所有正在运行的 Claude Code 或 Codex CLI 会话**,让它们读到被修补过的配置文件。
 
-> **从旧版本升级?** 重新运行 `uv run jarvis-cli install`,以注册驱动「我回复后停止语音」行为的新 `UserPromptSubmit` 和 `PostToolUse` hook。
+> **从旧版本升级?** 重新运行 `uv run jarvis install`,以注册驱动「我回复后停止语音」行为的新 `UserPromptSubmit` 和 `PostToolUse` hook。
 
 ## 验证
 
 ```bash
-uv run jarvis-cli status
+uv run jarvis status
 # {
 #   "queue_size": 0,
 #   "queue_capacity": 5,
@@ -145,7 +145,7 @@ uv run jarvis-cli status
 发一个合成事件并听听看:
 
 ```bash
-uv run jarvis-cli test --event permission_prompt --tool Bash
+uv run jarvis test --event permission_prompt --tool Bash
 # 首次应在约 5-15 秒内听到一句话(模型加载),
 # 之后每次约 3-5 秒
 ```
@@ -161,7 +161,7 @@ uv run jarvis-cli test --event permission_prompt --tool Bash
 
 ## 配置
 
-一切都在 `~/.jarvis-cli/config.toml` 里。`install` 之后你得到的默认值:
+一切都在 `~/.jarvis/config.toml` 里。`install` 之后你得到的默认值:
 
 ```toml
 [llm]
@@ -194,16 +194,16 @@ provider = "cosyvoice"         # Apache-2.0 本地声音克隆
 fallback = "say"               # macOS 自带,通用兜底
 
 [tts.cosyvoice]
-model_dir   = "~/.jarvis-cli/models/cosyvoice3-0.5b-candle"
-ref_audio_zh = "~/.jarvis-cli/voices/jarvis_zh.wav"
-ref_audio_en = "~/.jarvis-cli/voices/jarvis_en.wav"
+model_dir   = "~/.jarvis/models/cosyvoice3-0.5b-candle"
+ref_audio_zh = "~/.jarvis/voices/jarvis_zh.wav"
+ref_audio_en = "~/.jarvis/voices/jarvis_en.wav"
 ref_text_en = ""               # ref_audio_en 的文字稿——强烈建议填写
 n_timesteps = 10               # CFM 采样步数(10 = 库默认)
 
 [tts.xtts]                     # 仅当 [tts] provider = "xtts" 时使用
-model_dir   = "~/.jarvis-cli/models/xtts-v2"
-ref_audio_zh = "~/.jarvis-cli/voices/jarvis_zh.wav"
-ref_audio_en = "~/.jarvis-cli/voices/jarvis_en.wav"
+model_dir   = "~/.jarvis/models/xtts-v2"
+ref_audio_zh = "~/.jarvis/voices/jarvis_zh.wav"
+ref_audio_en = "~/.jarvis/voices/jarvis_en.wav"
 device = "mps"                 # mps | cpu
 temperature = 0.5              # < 0.75 默认值 → 多次合成间节奏更稳
 speed_short = 1.30             # < 60 字符:略微加速(XTTS 会放慢短句)
@@ -231,8 +231,8 @@ cloud_redaction = true         # 发送前清洗 HOME 路径与疑似密钥的 t
 编辑后,重新加载守护进程以生效:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
-launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist
+launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis.plist
+launchctl load   ~/Library/LaunchAgents/com.jobin.jarvis.plist
 ```
 
 ### 推荐档(零成本、对开源友好)
@@ -284,30 +284,30 @@ fallback = ""
 
 | 操作 | 命令 |
 |---|---|
-| 检查守护进程健康 | `uv run jarvis-cli status` |
-| 发一个合成事件 | `uv run jarvis-cli test --event permission_prompt --tool Bash` |
-| 手动触发贾维斯(由 LLM 措辞) | `uv run jarvis-cli say --reason user-input-requested` |
-| 手动触发贾维斯(读出原文) | `uv run jarvis-cli say --text "Sir, shall we proceed?"` |
-| 跟踪守护进程日志 | `tail -f ~/.jarvis-cli/daemon.log` |
-| 重新加载守护进程 | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis-cli.plist` |
-| 更新 plist 中的 API key | 重新运行 `uv run jarvis-cli install`(幂等) |
-| 卸载(保留数据) | `uv run jarvis-cli uninstall` |
-| 卸载(清除数据) | `uv run jarvis-cli uninstall --purge` |
+| 检查守护进程健康 | `uv run jarvis status` |
+| 发一个合成事件 | `uv run jarvis test --event permission_prompt --tool Bash` |
+| 手动触发贾维斯(由 LLM 措辞) | `uv run jarvis say --reason user-input-requested` |
+| 手动触发贾维斯(读出原文) | `uv run jarvis say --text "Sir, shall we proceed?"` |
+| 跟踪守护进程日志 | `tail -f ~/.jarvis/daemon.log` |
+| 重新加载守护进程 | `launchctl unload ~/Library/LaunchAgents/com.jobin.jarvis.plist && launchctl load ~/Library/LaunchAgents/com.jobin.jarvis.plist` |
+| 更新 plist 中的 API key | 重新运行 `uv run jarvis install`(幂等) |
+| 卸载(保留数据) | `uv run jarvis uninstall` |
+| 卸载(清除数据) | `uv run jarvis uninstall --purge` |
 
 ## 故障排查
 
 **完全没有声音。**
 
-- `uv run jarvis-cli status` —— 守护进程可达吗?
+- `uv run jarvis status` —— 守护进程可达吗?
 - `launchctl list | grep jarvis` —— 服务在运行吗?
-- `tail ~/.jarvis-cli/daemon.log` —— 有报错行吗?
+- `tail ~/.jarvis/daemon.log` —— 有报错行吗?
 - 测试最末端:`say "test"` —— 扬声器正常吗?
 
 **守护进程在跑但 `last_text` 从不变化。** Hook 没能到达 socket。常见原因:
 
-- 你在安装**之后**才加 API key —— 重新运行 `jarvis-cli install` 把它们重新烤进 plist,然后重载守护进程。
+- 你在安装**之后**才加 API key —— 重新运行 `jarvis install` 把它们重新烤进 plist,然后重载守护进程。
 - 你的 Claude Code 会话在安装**之前**就已运行 —— 重启 CC,让它重新读取 `~/.claude/settings.json`。
-- `cat ~/.claude/settings.json | jq '.hooks.Notification'` 应当显示 `.venv/bin/jarvis-cli-hook` 的绝对路径。若显示的是裸的 `jarvis-cli-hook`,重新运行 install。
+- `cat ~/.claude/settings.json | jq '.hooks.Notification'` 应当显示 `.venv/bin/jarvis-hook` 的绝对路径。若显示的是裸的 `jarvis-hook`,重新运行 install。
 
 **你听到「Sir, the local language model … appears unreachable. I am falling back to the cloud.」** Ollama 要么没运行、模型没拉取,要么请求超时。启动 `ollama serve`,确认 `ollama list` 包含 `config.toml` 里的模型,再试 `curl http://localhost:11434/api/tags`。持续中断期间,该提醒被限流为每五分钟一次。
 
@@ -330,14 +330,14 @@ Claude Code 只对工具权限确认、空闲等待和 MCP elicitation 触发它
 **由 LLM 措辞** —— 给模型一个上下文标签,让它写出那句话:
 
 ```bash
-uv run jarvis-cli say --reason "user-input-requested"
+uv run jarvis say --reason "user-input-requested"
 # 听到:"Sir, your input is awaited."
 ```
 
 **读出这段原文** —— 完全绕过 LLM(更快、可预测,适合念出实际问题):
 
 ```bash
-uv run jarvis-cli say --text "Sir, shall this repository be made public or private?"
+uv run jarvis say --text "Sir, shall this repository be made public or private?"
 # 听到:<原文>
 # 默认 --lang en;用 --lang zh 切换声音/发音
 ```
@@ -345,7 +345,7 @@ uv run jarvis-cli say --text "Sir, shall this repository be made public or priva
 **为单次调用覆盖声音** —— 适合在不改配置的情况下 A/B 试听候选声音:
 
 ```bash
-uv run jarvis-cli say \
+uv run jarvis say \
   --text "Sir, sample line for voice tasting." \
   --voice onwK4e9ZLuTAKqWW03F9        # Daniel,更低沉的英式男声
 # 下一次不带 --voice 的 `say` 会回到配置默认声音
@@ -364,35 +364,35 @@ uv run jarvis-cli say \
 ```bash
 uv sync --extra skills          # 加入 fastembed(ONNX,无 PyTorch)+ numpy + pyyaml
 
-# 在 ~/.jarvis-cli/config.toml 中启用
+# 在 ~/.jarvis/config.toml 中启用
 # [skills]
 # enabled = true
 
 # 预先拉取模型(可断点续传;慢网推荐)
-jarvis-cli skills download
+jarvis skills download
 
-jarvis-cli skills status        # 列出发现的技能(不加载模型)
-jarvis-cli skills query 帮我提交代码   # 看一个提示会检索到什么
+jarvis skills status        # 列出发现的技能(不加载模型)
+jarvis skills query 帮我提交代码   # 看一个提示会检索到什么
 
 # 一键应用隐藏策略,可回滚
-jarvis-cli skills govern --dry-run   # 预览将隐藏 / 禁用什么
-jarvis-cli skills govern             # 隐藏独立技能 + 禁用带技能的插件
-jarvis-cli skills govern-status      # 当前治理在管什么
-jarvis-cli skills restore            # 按 manifest 撤销
+jarvis skills govern --dry-run   # 预览将隐藏 / 禁用什么
+jarvis skills govern             # 隐藏独立技能 + 禁用带技能的插件
+jarvis skills govern-status      # 当前治理在管什么
+jarvis skills restore            # 按 manifest 撤销
 ```
 
 它如何与守护进程已在运行的 hook 协同:
 
-- **Embedding 模型** —— `jinaai/jina-embeddings-v2-base-zh`(中英双语,ONNX,约 0.64GB,一次性下载到 `~/.jarvis-cli/skills/models`)。选它是为了跨语言召回:中文提示能匹配英文技能描述。热查询约 10-15ms;模型在守护进程启动时预热。
+- **Embedding 模型** —— `jinaai/jina-embeddings-v2-base-zh`(中英双语,ONNX,约 0.64GB,一次性下载到 `~/.jarvis/skills/models`)。选它是为了跨语言召回:中文提示能匹配英文技能描述。热查询约 10-15ms;模型在守护进程启动时预热。
 - **检索** —— 在本地索引(`catalog.json` + `vectors.npy`)上做余弦相似度,外加一个小的词法加权,使共享的专有名词(提示里出现 `vercel`/`vue`/`git`)抬升明显匹配项。按分数分级:高置信命中注入技能正文;较弱的给出一行菜单;再低则什么都不做。
-- **隐藏长尾** —— `jarvis-cli skills govern` 把策略固化下来,并记录一份 manifest,使 `skills restore` 能精确反向撤销。独立的 `~/.claude/skills/` 会在 `.claude/settings.local.json` 里被设为 `skillOverrides`(`"user-invocable-only"`)—— 从模型启动上下文中剔除,同时保留 `/name` 可用。插件技能无法按单个技能隐藏,所以带技能的插件被整体禁用(其 agent 会先被重新安置到 `~/.claude/agents/`,例如 superpowers 的 `code-reviewer` 得以保留);不含技能的插件则保持不动。无论哪种情况,检索 hook 仍会无视启用状态从磁盘呈现每一个技能。`--keep name1,name2` 可保留一组热点技能可见。
+- **隐藏长尾** —— `jarvis skills govern` 把策略固化下来,并记录一份 manifest,使 `skills restore` 能精确反向撤销。独立的 `~/.claude/skills/` 会在 `.claude/settings.local.json` 里被设为 `skillOverrides`(`"user-invocable-only"`)—— 从模型启动上下文中剔除,同时保留 `/name` 可用。插件技能无法按单个技能隐藏,所以带技能的插件被整体禁用(其 agent 会先被重新安置到 `~/.claude/agents/`,例如 superpowers 的 `code-reviewer` 得以保留);不含技能的插件则保持不动。无论哪种情况,检索 hook 仍会无视启用状态从磁盘呈现每一个技能。`--keep name1,name2` 可保留一组热点技能可见。
 
 在 `config.toml` 的 `[skills]` 下调阈值与模型(见 `SkillsConfig`)。没有该 extra 时一切退化为空操作:没有模型、没有注入、TTS 不受影响。
 
 ## 项目结构
 
 ```
-src/jarvis_cli/
+src/jarvis/
 ├── hook_client.py        # one-shot stdin → socket bridge
 ├── daemon/
 │   ├── main.py           # asyncio entrypoint
@@ -417,7 +417,7 @@ src/jarvis_cli/
 │   ├── injector.py       # tiered body / menu / none
 │   ├── service.py        # daemon-side query + per-session dedup
 │   ├── govern.py         # apply/restore the hiding policy (manifest)
-│   └── cli.py            # jarvis-cli skills status|query|download|govern|restore
+│   └── cli.py            # jarvis skills status|query|download|govern|restore
 ├── player.py             # afplay + ffplay (streaming) wrappers
 ├── config.py             # TOML loader, dataclass schema
 └── install.py            # CLI: install / uninstall / status / test / say

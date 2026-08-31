@@ -5,9 +5,9 @@ Match(record, hybrid_score, cosine, whole_word) -- the gate (shared
 bigram-only overlap on a common word no longer qualifies. ``_build_injection``
 receives pre-filtered, intent-confirmed candidates from the daemon.
 """
-from jarvis_cli.mcp.registry import McpServerRecord
-from jarvis_cli.mcp.service import _build_clarify, _build_injection
-from jarvis_cli.retrieval.retriever import Match, gate_matches
+from jarvis.mcp.registry import McpServerRecord
+from jarvis.mcp.service import _build_clarify, _build_injection
+from jarvis.retrieval.retriever import Match, gate_matches
 
 
 def _rec(name: str, desc: str = "test server", **connect_kw) -> McpServerRecord:

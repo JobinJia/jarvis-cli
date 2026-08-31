@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis_cli.daemon.main import Daemon
+from jarvis.daemon.main import Daemon
 
 
 class _NoStreamTTS:

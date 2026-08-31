@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis_cli.tts.engine import TTSEngine
+from jarvis.tts.engine import TTSEngine
 
 
 class _Fake:

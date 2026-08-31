@@ -10,9 +10,9 @@ import json
 import httpx
 import respx
 
-from jarvis_cli.config import OllamaConfig
-from jarvis_cli.retrieval.retriever import Match
-from jarvis_cli.retrieval.verifier import (
+from jarvis.config import OllamaConfig
+from jarvis.retrieval.retriever import Match
+from jarvis.retrieval.verifier import (
     CONFIRMED,
     NONE,
     UNCLEAR,

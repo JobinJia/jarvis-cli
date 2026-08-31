@@ -1,5 +1,5 @@
-from jarvis_cli.phrase.templates import render_template
-from jarvis_cli.types import Event
+from jarvis.phrase.templates import render_template
+from jarvis.types import Event
 
 
 def test_permission_prompt_zh():

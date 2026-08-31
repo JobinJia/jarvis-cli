@@ -5,7 +5,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 .DS_Store
-~/.jarvis-cli/      # operator runtime dir (never commit)
+~/.jarvis/      # operator runtime dir (never commit)
 *.wav
 *.mp3
 build/

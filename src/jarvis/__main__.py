@@ -1,4 +1,4 @@
-"""Allow `python -m jarvis_cli <subcommand>` as an alternative to console scripts."""
+"""Allow `python -m jarvis <subcommand>` as an alternative to console scripts."""
 from __future__ import annotations
 
 import sys

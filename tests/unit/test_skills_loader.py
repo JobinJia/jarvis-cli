@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from jarvis_cli.skills.catalog import SkillRecord
-from jarvis_cli.skills.loader import load_body
+from jarvis.skills.catalog import SkillRecord
+from jarvis.skills.loader import load_body
 
 
 def _rec(tmp: Path, text: str) -> SkillRecord:

@@ -102,9 +102,9 @@ class LLMConfig:
 
 @dataclass
 class XTTSConfig:
-    model_dir: str = "~/.jarvis-cli/models/xtts-v2"
-    ref_audio_zh: str = "~/.jarvis-cli/voices/jarvis_zh.wav"
-    ref_audio_en: str = "~/.jarvis-cli/voices/jarvis_en.wav"
+    model_dir: str = "~/.jarvis/models/xtts-v2"
+    ref_audio_zh: str = "~/.jarvis/voices/jarvis_zh.wav"
+    ref_audio_en: str = "~/.jarvis/voices/jarvis_en.wav"
     # Pre-extracted speaker embedding (.pth holding `gpt_cond_latent` +
     # `speaker_embedding`). When set and present, the provider clones from
     # this cached latent via `inference()` instead of re-encoding a ref wav
@@ -113,7 +113,7 @@ class XTTSConfig:
     # it is the default fixed voice. English only — the Bettany timbre sounds
     # muddy speaking Chinese, so the zh path always uses ref_audio_zh instead.
     # Empty string falls back to the ref_audio_{zh,en} clone path above.
-    speaker_embedding: str = "~/.jarvis-cli/voices/jarvis_speaker.pth"
+    speaker_embedding: str = "~/.jarvis/voices/jarvis_speaker.pth"
     device: str = "mps"
     # Ceiling on PyTorch's MPS caching allocator, as a fraction of the GPU's
     # recommended working-set size (PyTorch's own default is 1.7). Only read
@@ -177,9 +177,9 @@ class CosyVoiceConfig:
     Quality outperforms XTTS-v2 on speaker similarity in our A/B; the
     permissive license also clears the OSS path that XTTS's CPML blocks.
     """
-    model_dir: str = "~/.jarvis-cli/models/cosyvoice3-0.5b-candle"
-    ref_audio_zh: str = "~/.jarvis-cli/voices/jarvis_zh.wav"
-    ref_audio_en: str = "~/.jarvis-cli/voices/jarvis_en.wav"
+    model_dir: str = "~/.jarvis/models/cosyvoice3-0.5b-candle"
+    ref_audio_zh: str = "~/.jarvis/voices/jarvis_zh.wav"
+    ref_audio_en: str = "~/.jarvis/voices/jarvis_en.wav"
     # Transcript of each ref audio. When provided, the provider routes
     # through inference_zero_shot (which uses the transcript to ground the
     # LLM and prevent the double-take loop that cross_lingual mode falls
@@ -216,8 +216,8 @@ class CosyVoiceConfig:
     fallback_cps_zh: float = 4.5
     max_synth_attempts: int = 4
     save_synth_samples: bool = False
-    sample_dir: str = "~/.jarvis-cli/cache/samples"
-    duration_baseline_path: str = "~/.jarvis-cli/cache/duration_baseline.json"
+    sample_dir: str = "~/.jarvis/cache/samples"
+    duration_baseline_path: str = "~/.jarvis/cache/duration_baseline.json"
 
 
 @dataclass
@@ -232,7 +232,7 @@ class PiperConfig:
     Voices are `<name>.onnx` (+ `.onnx.json`) under `data_dir`; fetch with
     `python -m piper.download_voices <name> --data-dir <data_dir>`.
     """
-    data_dir: str = "~/.jarvis-cli/models/piper"
+    data_dir: str = "~/.jarvis/models/piper"
     # British male butler voice — the default Jarvis identity is English.
     # Swap to a JARVIS-tuned voice (e.g. jgkawell/jarvis on HF) for closer timbre.
     voice_en: str = "en_GB-alan-medium"
@@ -375,7 +375,7 @@ class BehaviorConfig:
     #   2 — MCU Jarvis: dry banter, witty asides
     #   3 — Tony-mode: openly sardonic, never sycophantic
     # Out-of-range values are clamped on load by `load_config`.
-    # Adjust live with `jarvis-cli tone <0-3>` — no daemon restart needed.
+    # Adjust live with `jarvis tone <0-3>` — no daemon restart needed.
     humor_level: int = 1
     # How Jarvis addresses the user, per output language. Substituted into
     # the few-shot examples as well as the system prompt, so small models
@@ -407,9 +407,9 @@ class SkillsConfig:
     model_name: str = "jinaai/jina-embeddings-v2-base-zh"
     # Persistent model cache — fastembed otherwise drops it in a temp dir that
     # the OS can purge, forcing a slow re-download.
-    cache_dir: str = "~/.jarvis-cli/skills/models"
+    cache_dir: str = "~/.jarvis/skills/models"
     # Where catalog.json + vectors.npy live.
-    index_dir: str = "~/.jarvis-cli/skills"
+    index_dir: str = "~/.jarvis/skills"
     top_k: int = 5
     # Hybrid-score tiers (cosine + lexical boost): >= high injects the skill
     # body; >= med offers a menu. Tuned for jina-v2-base-zh on Chinese prompts,
@@ -434,8 +434,8 @@ class McpConfig:
     embedding model with SkillsConfig.  Opt-in (``enabled=false``)."""
 
     enabled: bool = False
-    registry_path: str = "~/.jarvis-cli/mcp/registry.json"
-    index_dir: str = "~/.jarvis-cli/mcp"
+    registry_path: str = "~/.jarvis/mcp/registry.json"
+    index_dir: str = "~/.jarvis/mcp"
     top_k: int = 5
     high_threshold: float = 0.35
     med_threshold: float = 0.22
@@ -497,9 +497,9 @@ class RemoteConfig:
 
 @dataclass
 class PathsConfig:
-    socket: str = "~/.jarvis-cli/jarvis.sock"
-    log: str = "~/.jarvis-cli/daemon.log"
-    missed_log: str = "~/.jarvis-cli/missed.log"
+    socket: str = "~/.jarvis/jarvis.sock"
+    log: str = "~/.jarvis/daemon.log"
+    missed_log: str = "~/.jarvis/missed.log"
 
 
 @dataclass
@@ -563,4 +563,4 @@ def load_config(path: str | Path) -> Config:
     return cfg
 
 
-DEFAULT_CONFIG_PATH = expanduser("~/.jarvis-cli/config.toml")
+DEFAULT_CONFIG_PATH = expanduser("~/.jarvis/config.toml")

@@ -4,7 +4,7 @@ import socket
 import threading
 from pathlib import Path
 
-from jarvis_cli.hook_client import forward_event
+from jarvis.hook_client import forward_event
 
 
 def _start_unix_echo_server(path: Path, max_conns: int = 1) -> list[bytes]:
@@ -533,7 +533,7 @@ def test_forward_event_codex_first_turn_synthesizes_session_start(tmp_path: Path
     """Codex v0.141+ does not fire SessionStart hooks. On the FIRST
     agent-turn-complete for a thread, the hook synthesizes a session_start
     before the idle_prompt so the briefing plays."""
-    import jarvis_cli.hook_client as hc
+    import jarvis.hook_client as hc
 
     monkeypatch.setattr(hc, "_CODEX_SESSIONS_DIR", tmp_path / "sessions")
     sock_path = tmp_path / "j.sock"
@@ -558,7 +558,7 @@ def test_forward_event_codex_first_turn_synthesizes_session_start(tmp_path: Path
 def test_forward_event_codex_second_turn_only_idle_prompt(tmp_path: Path, monkeypatch):
     """After the first turn's synthetic session_start, subsequent turns
     only emit idle_prompt (no repeat briefing)."""
-    import jarvis_cli.hook_client as hc
+    import jarvis.hook_client as hc
 
     sessions_dir = tmp_path / "sessions"
     monkeypatch.setattr(hc, "_CODEX_SESSIONS_DIR", sessions_dir)

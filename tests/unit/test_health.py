@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from jarvis_cli.daemon.health import HealthServer
+from jarvis.daemon.health import HealthServer
 
 
 @pytest.mark.asyncio

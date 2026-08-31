@@ -1073,7 +1073,7 @@ wheels = [
 ]
 
 [[package]]
-name = "jarvis-cli"
+name = "jarvis"
 version = "0.7.0"
 source = { editable = "." }
 dependencies = [
@@ -1137,7 +1137,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'skills'", specifier = ">=0.8" },
     { name = "g2pw", marker = "extra == 'piper'", specifier = ">=0.1.1" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "jarvis-cli", extras = ["xtts", "cosyvoice", "piper", "audio", "skills"], marker = "extra == 'all'" },
+    { name = "jarvis", extras = ["xtts", "cosyvoice", "piper", "audio", "skills"], marker = "extra == 'all'" },
     { name = "langdetect", specifier = ">=1.0.9" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "numpy", marker = "extra == 'cosyvoice'", specifier = ">=2.0" },

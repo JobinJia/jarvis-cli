@@ -9,10 +9,10 @@ import httpx
 import pytest
 import respx
 
-from jarvis_cli.config import Config, RemoteConfig
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.notify import remote
-from jarvis_cli.types import Event
+from jarvis.config import Config, RemoteConfig
+from jarvis.daemon.main import Daemon
+from jarvis.notify import remote
+from jarvis.types import Event
 
 
 def _event(**kw) -> Event:
@@ -264,7 +264,7 @@ async def test_on_remote_decision_spawns_bridge_cmd_with_env():
     d = Daemon(Config())
     d.cfg.remote.on_decision_cmd = "./bridge.sh"
     with patch(
-        "jarvis_cli.daemon.main.asyncio.create_subprocess_shell",
+        "jarvis.daemon.main.asyncio.create_subprocess_shell",
         new_callable=AsyncMock,
     ) as spawn:
         await d._on_remote_decision("approve", "sid-9")
@@ -281,7 +281,7 @@ async def test_on_remote_decision_spawns_bridge_cmd_with_env():
 async def test_on_remote_decision_no_cmd_no_spawn():
     d = Daemon(Config())  # on_decision_cmd defaults to ""
     with patch(
-        "jarvis_cli.daemon.main.asyncio.create_subprocess_shell",
+        "jarvis.daemon.main.asyncio.create_subprocess_shell",
         new_callable=AsyncMock,
     ) as spawn:
         await d._on_remote_decision("approve", "sid-9")
@@ -293,7 +293,7 @@ async def test_on_remote_decision_spawn_failure_is_swallowed():
     d = Daemon(Config())
     d.cfg.remote.on_decision_cmd = "./bridge.sh"
     with patch(
-        "jarvis_cli.daemon.main.asyncio.create_subprocess_shell",
+        "jarvis.daemon.main.asyncio.create_subprocess_shell",
         new_callable=AsyncMock,
         side_effect=OSError("no such file"),
     ):

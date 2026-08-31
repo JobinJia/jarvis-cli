@@ -6,8 +6,8 @@ import re
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_reload_behavior_bad_config_is_reported_not_raised(tmp_path):
 def test_tone_cli_rewrites_only_the_humor_line(tmp_path, monkeypatch):
     """cmd_tone must flip the number in place and preserve every comment —
     users hand-edit this file."""
-    from jarvis_cli import install as install_mod
+    from jarvis import install as install_mod
 
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(
@@ -83,7 +83,7 @@ def test_tone_cli_rewrites_only_the_humor_line(tmp_path, monkeypatch):
     # Daemon unreachable in tests: the reload reply is None and cmd_tone
     # reports "applies on next start" — still exit 0.
     monkeypatch.setattr(
-        "jarvis_cli.hook_client._request_reply", lambda *a, **k: None,
+        "jarvis.hook_client._request_reply", lambda *a, **k: None,
     )
 
     rc = install_mod.cmd_tone(
@@ -99,7 +99,7 @@ def test_tone_cli_rewrites_only_the_humor_line(tmp_path, monkeypatch):
 
 
 def test_tone_cli_errors_when_key_missing(tmp_path, monkeypatch):
-    from jarvis_cli import install as install_mod
+    from jarvis import install as install_mod
 
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("[behavior]\n", encoding="utf-8")

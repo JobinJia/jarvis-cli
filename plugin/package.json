@@ -1,5 +1,5 @@
 {
-  "name": "jarvis-cli-plugin",
+  "name": "jarvis-plugin",
   "version": "0.1.0",
   "description": "Claude Code plugin for Jarvis voice notifications"
 }

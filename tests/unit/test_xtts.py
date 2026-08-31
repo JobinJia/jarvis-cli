@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cli.config import XTTSConfig
-from jarvis_cli.tts.providers.xtts import XTTSProvider
+from jarvis.config import XTTSConfig
+from jarvis.tts.providers.xtts import XTTSProvider
 
 
 @pytest.mark.asyncio
@@ -329,7 +329,7 @@ async def test_xtts_stream_propagates_inference_error(tmp_path: Path):
 
 
 def test_split_for_gpt_passes_short_text_through():
-    from jarvis_cli.tts.providers.xtts import _split_for_gpt
+    from jarvis.tts.providers.xtts import _split_for_gpt
 
     assert _split_for_gpt("Right away, sir.") == ["Right away, sir."]
 
@@ -338,7 +338,7 @@ def test_split_for_gpt_splits_long_text_at_sentence_boundaries():
     """XTTS's GPT silently truncates past ~250 chars — long announcements
     lost their tail until we started splitting. Every piece must fit the
     limit and no text may be dropped."""
-    from jarvis_cli.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
+    from jarvis.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
 
     long = " ".join(
         f"Sentence number {i} reporting in with a reasonable length, sir."
@@ -353,7 +353,7 @@ def test_split_for_gpt_splits_long_text_at_sentence_boundaries():
 
 
 def test_split_for_gpt_hard_splits_single_overlong_sentence():
-    from jarvis_cli.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
+    from jarvis.tts.providers.xtts import _GPT_CHAR_LIMIT, _split_for_gpt
 
     monster = "word " * 100  # no sentence-end punctuation at all
     pieces = _split_for_gpt(monster)
@@ -390,7 +390,7 @@ async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
             patch.object(p, "_conditioning_for", return_value=("g", "s")):
         chunks = [c async for c in p.stream(long_text, lang="en")]
 
-    from jarvis_cli.tts.providers.xtts import _split_for_gpt
+    from jarvis.tts.providers.xtts import _split_for_gpt
     n_pieces = len(_split_for_gpt(long_text))
     assert fake_model.synthesizer.tts_model.inference.call_count == n_pieces
     texts = [
@@ -409,7 +409,7 @@ async def test_xtts_stream_generates_per_piece_for_long_text(tmp_path: Path):
 
 
 def test_normalize_pauses_en_dash_to_comma():
-    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+    from jarvis.tts.providers.xtts import _normalize_pauses
 
     assert _normalize_pauses(
         "Sir, the build failed — three tests did not pass.", "en",
@@ -417,7 +417,7 @@ def test_normalize_pauses_en_dash_to_comma():
 
 
 def test_normalize_pauses_zh_double_dash_to_comma():
-    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+    from jarvis.tts.providers.xtts import _normalize_pauses
 
     assert _normalize_pauses(
         "先生，测试未通过——三个用例失败了。", "zh",
@@ -425,14 +425,14 @@ def test_normalize_pauses_zh_double_dash_to_comma():
 
 
 def test_normalize_pauses_keeps_hyphens_and_plain_text():
-    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+    from jarvis.tts.providers.xtts import _normalize_pauses
 
     line = "Sir, he wants to run pre-commit with --no-verify."
     assert _normalize_pauses(line, "en") == line
 
 
 def test_normalize_pauses_trailing_dash_does_not_dangle():
-    from jarvis_cli.tts.providers.xtts import _normalize_pauses
+    from jarvis.tts.providers.xtts import _normalize_pauses
 
     assert _normalize_pauses(
         "Sir, he wishes to push to main —", "en",

@@ -31,7 +31,7 @@ the sentence itself is always LLM-generated.
 
 ## Changes
 
-### `src/jarvis_cli/phrase/prompt.py`
+### `src/jarvis/phrase/prompt.py`
 
 - `_IDLE_FLAVORS`: ~12 short English angle hints; `_pick_flavor()` =
   `random.choice` (monkeypatch-friendly).
@@ -41,7 +41,7 @@ the sentence itself is always LLM-generated.
   flavor, never reuse the avoid phrasing. Non-idle events are untouched.
 - EN/ZH few-shot idle exemplars updated to the new schema.
 
-### `src/jarvis_cli/phrase/router.py`
+### `src/jarvis/phrase/router.py`
 
 - `PhraseRouter` remembers `_last_idle_line`; passes it as `avoid` on the
   next idle request and updates it with whatever line was produced

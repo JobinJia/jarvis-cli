@@ -7,7 +7,7 @@ from datetime import datetime
 import httpx
 import pytest
 
-from jarvis_cli.briefing import (
+from jarvis.briefing import (
     WeatherCache,
     WeatherSnapshot,
     _clean_llm_output,
@@ -22,8 +22,8 @@ from jarvis_cli.briefing import (
     compose_briefing,
     fetch_weather,
 )
-from jarvis_cli.config import SessionBriefingConfig
-from jarvis_cli.phrase.providers.base import PhraseProvider
+from jarvis.config import SessionBriefingConfig
+from jarvis.phrase.providers.base import PhraseProvider
 
 
 # --- greeting buckets -------------------------------------------------------
@@ -120,7 +120,7 @@ async def test_weather_cache_serves_fresh_value_without_refetching(
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     cache = WeatherCache(ttl_seconds=600)
     a = await cache.get("Shanghai", timeout=1.0)
@@ -139,7 +139,7 @@ async def test_weather_cache_refetches_after_ttl_expiry(
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     # ttl=0 means every call is stale → fetcher is invoked each time.
     cache = WeatherCache(ttl_seconds=0)
@@ -155,7 +155,7 @@ async def test_weather_cache_caches_none_so_outages_dont_flood(
     """When wttr.in is down, we still cache the None result for the TTL
     window — otherwise every session_start would re-hit the dead service."""
     fake = _FakeFetch(None)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
     cache = WeatherCache(ttl_seconds=600)
     await cache.get("Shanghai", timeout=1.0)
     await cache.get("Shanghai", timeout=1.0)
@@ -173,7 +173,7 @@ async def test_weather_cache_serves_stale_snapshot_when_fetch_fails(
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     # ttl=0 forces a refetch every call; the second call's fetch fails.
     cache = WeatherCache(ttl_seconds=0, stale_max_age_seconds=7200)
@@ -193,7 +193,7 @@ async def test_weather_cache_stale_snapshot_expires(
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     cache = WeatherCache(ttl_seconds=0, stale_max_age_seconds=0)
     assert await cache.get("Shanghai", timeout=1.0) is snap
@@ -208,14 +208,14 @@ async def test_weather_cache_stale_age_survives_system_sleep(
     """Staleness is aged on the wall clock, not `time.monotonic()`: on macOS
     the monotonic clock stops while the machine sleeps, so a laptop closed
     overnight would otherwise wake and speak last night's weather as current."""
-    from jarvis_cli import briefing
+    from jarvis import briefing
 
     snap = WeatherSnapshot(
         city="Shanghai", temp_c=22, condition="Clear", humidity=70,
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     wall = {"now": 1_700_000_000.0}
     monkeypatch.setattr(briefing.time, "time", lambda: wall["now"])
@@ -241,7 +241,7 @@ async def test_weather_cache_stale_fallback_applies_to_cached_none(
         wind_kph=10, wind_dir="E",
     )
     fake = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", fake)
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", fake)
 
     cache = WeatherCache(ttl_seconds=600, stale_max_age_seconds=7200)
     assert await cache.get("Shanghai", timeout=1.0) is snap
@@ -266,7 +266,7 @@ async def test_compose_briefing_includes_greeting_time_date_and_weather(
         city="Shanghai", temp_c=22, condition="Partly cloudy",
         humidity=100, wind_kph=16, wind_dir="ESE",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     cfg = SessionBriefingConfig(city="Shanghai")
     cache = WeatherCache(ttl_seconds=600)
@@ -286,7 +286,7 @@ async def test_compose_briefing_includes_greeting_time_date_and_weather(
 async def test_compose_briefing_degrades_to_time_only_when_weather_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(None))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(None))
 
     cfg = SessionBriefingConfig(city="Shanghai")
     cache = WeatherCache(ttl_seconds=600)
@@ -298,7 +298,7 @@ async def test_compose_briefing_degrades_to_time_only_when_weather_fails(
     assert "ten o'clock" not in text  # sanity: don't crash with weather missing
     assert "degrees" not in text  # weather phrase completely omitted
     # Closing nudge is randomized across a small set — assert any one fired.
-    from jarvis_cli.briefing import _SIGN_OFFS
+    from jarvis.briefing import _SIGN_OFFS
     assert any(s in text for s in _SIGN_OFFS), text
 
 
@@ -333,7 +333,7 @@ async def test_offline_briefings_rotate_across_calls(
         city="Shanghai", temp_c=22, condition="Partly cloudy",
         humidity=80, wind_kph=10, wind_dir="ESE",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     cfg = SessionBriefingConfig(city="Shanghai")
     cache = WeatherCache(ttl_seconds=600)
@@ -358,7 +358,7 @@ async def test_llm_briefing_passes_humor_clause_into_system_prompt(
         city="X", temp_c=10, condition="Clear", humidity=50,
         wind_kph=2, wind_dir="N",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     llm = _FixedSeqProvider(["Sir, the watch reads ten — shall we?"])
     cfg = SessionBriefingConfig(city="X")
@@ -389,7 +389,7 @@ async def test_llm_briefing_takes_precedence_when_usable(
         city="Shanghai", temp_c=22, condition="Clear", humidity=60,
         wind_kph=5, wind_dir="N",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     llm = _FixedSeqProvider([
         "Good morning, sir. The clock has just struck nine; Shanghai is clear and twenty-two degrees. Where shall we begin?",
@@ -418,7 +418,7 @@ async def test_llm_briefing_falls_back_to_template_on_unusable_output(
         city="Shanghai", temp_c=22, condition="Clear", humidity=60,
         wind_kph=5, wind_dir="N",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     llm = _FixedSeqProvider([""])  # empty → unusable
     cfg = SessionBriefingConfig(city="Shanghai")
@@ -440,7 +440,7 @@ async def test_llm_briefing_falls_back_when_provider_raises(
         city="X", temp_c=10, condition="Clear", humidity=50,
         wind_kph=2, wind_dir="N",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     class _Boom(PhraseProvider):
         name = "boom"
@@ -470,7 +470,7 @@ async def test_llm_briefing_rejected_when_it_contradicts_time_of_day(
         city="Shanghai", temp_c=22, condition="Clear", humidity=60,
         wind_kph=5, wind_dir="N",
     )
-    monkeypatch.setattr("jarvis_cli.briefing.fetch_weather", _FakeFetch(snap))
+    monkeypatch.setattr("jarvis.briefing.fetch_weather", _FakeFetch(snap))
 
     llm = _FixedSeqProvider([
         "Good afternoon, sir. It's a pleasant day in Shanghai. Shall we?",
@@ -489,7 +489,7 @@ async def test_llm_briefing_rejected_when_it_contradicts_time_of_day(
 
 
 def test_contradicts_period_catches_wrong_period_greetings():
-    from jarvis_cli.briefing import _contradicts_period
+    from jarvis.briefing import _contradicts_period
 
     assert _contradicts_period("Good afternoon, sir.", "night") is True
     assert _contradicts_period("Good morning, sir.", "night") is True
@@ -526,7 +526,7 @@ async def test_fetch_wttr_returns_none_on_http_error(
 ) -> None:
     """A wttr.in network/HTTP failure must not raise — it returns None so
     fetch_weather can fall through to the next source."""
-    from jarvis_cli import briefing
+    from jarvis import briefing
 
     async def _explode(city: str, timeout: float) -> dict:
         raise httpx.ConnectError("nope")
@@ -646,7 +646,7 @@ async def test_fetch_open_meteo_normalizes_underscored_city(
     """`detect_city` returns the raw timezone tail, so "New_York" and friends
     are the common case. open-meteo's geocoder finds nothing for those — the
     underscore has to become a space or the primary source misses every time."""
-    from jarvis_cli import briefing
+    from jarvis import briefing
 
     _FakeGeoClient.calls = []
     monkeypatch.setattr(briefing.httpx, "AsyncClient", _FakeGeoClient)
@@ -663,7 +663,7 @@ async def test_fetch_open_meteo_returns_none_when_geocode_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unknown place yields no results — return None so wttr.in gets a go."""
-    from jarvis_cli import briefing
+    from jarvis import briefing
 
     _FakeGeoClient.calls = []
     monkeypatch.setattr(briefing.httpx, "AsyncClient", _FakeGeoClient)
@@ -685,8 +685,8 @@ async def test_fetch_weather_falls_back_to_wttr(
         return None
 
     wttr = _FakeFetch(snap)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", _open_meteo_fails)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", wttr)
+    monkeypatch.setattr("jarvis.briefing._fetch_open_meteo", _open_meteo_fails)
+    monkeypatch.setattr("jarvis.briefing._fetch_wttr", wttr)
 
     result = await fetch_weather("Chongqing", 3.0)
     assert result is snap
@@ -704,8 +704,8 @@ async def test_fetch_weather_skips_backup_when_primary_succeeds(
     )
     primary = _FakeFetch(snap)
     backup = _FakeFetch(None)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", primary)
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", backup)
+    monkeypatch.setattr("jarvis.briefing._fetch_open_meteo", primary)
+    monkeypatch.setattr("jarvis.briefing._fetch_wttr", backup)
 
     result = await fetch_weather("Chongqing", 3.0)
     assert result is snap
@@ -717,6 +717,6 @@ async def test_fetch_weather_skips_backup_when_primary_succeeds(
 async def test_fetch_weather_returns_none_when_all_sources_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_wttr", _FakeFetch(None))
-    monkeypatch.setattr("jarvis_cli.briefing._fetch_open_meteo", _FakeFetch(None))
+    monkeypatch.setattr("jarvis.briefing._fetch_wttr", _FakeFetch(None))
+    monkeypatch.setattr("jarvis.briefing._fetch_open_meteo", _FakeFetch(None))
     assert await fetch_weather("Chongqing", 3.0) is None

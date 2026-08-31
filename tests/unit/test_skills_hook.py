@@ -1,7 +1,7 @@
 import json
 
-from jarvis_cli import hook_client
-from jarvis_cli.config import Config
+from jarvis import hook_client
+from jarvis.config import Config
 
 
 def _cfg(enabled: bool) -> Config:

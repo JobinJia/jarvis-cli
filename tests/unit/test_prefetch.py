@@ -17,9 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 def _llm_event(

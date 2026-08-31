@@ -1,4 +1,4 @@
-"""`jarvis-cli skills <status|index|query>` — operate/debug the skill index.
+"""`jarvis skills <status|index|query>` — operate/debug the skill index.
 
 `status` is dependency-light (catalog scan only); `index` and `query` load the
 embedding model, so they require the `skills` extra and print a clear hint if
@@ -80,7 +80,7 @@ def _cmd_download(model_name: str, cache_dir: str, attempts: int) -> int:
             print(f"  attempt {attempt}/{attempts} interrupted ({type(exc).__name__}); "
                   "resuming…")
             time.sleep(2)
-    print("gave up — re-run `jarvis-cli skills download` to keep resuming")
+    print("gave up — re-run `jarvis skills download` to keep resuming")
     return 1
 
 

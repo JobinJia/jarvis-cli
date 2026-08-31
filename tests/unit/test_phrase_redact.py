@@ -1,4 +1,4 @@
-from jarvis_cli.phrase.redact import scrub, speakable
+from jarvis.phrase.redact import scrub, speakable
 
 
 def test_scrub_replaces_home_path(monkeypatch):

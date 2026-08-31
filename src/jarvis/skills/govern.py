@@ -51,7 +51,7 @@ class GovernPaths:
             cc_settings=home / ".claude" / "settings.json",
             cc_settings_local=home / ".claude" / "settings.local.json",
             cc_agents=home / ".claude" / "agents",
-            manifest=home / ".jarvis-cli" / "skills" / "govern-manifest.json",
+            manifest=home / ".jarvis" / "skills" / "govern-manifest.json",
         )
 
 

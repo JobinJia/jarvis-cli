@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cli.config import PiperConfig
-from jarvis_cli.tts.providers.piper import PiperProvider
+from jarvis.config import PiperConfig
+from jarvis.tts.providers.piper import PiperProvider
 
 
 def _fake_voice(frames: int = 24000) -> MagicMock:
@@ -71,7 +71,7 @@ async def test_piper_caches_loaded_voice(tmp_path: Path):
     (tmp_path / "en_GB-alan-medium.onnx").write_bytes(b"\x00")  # presence check
     voice = _fake_voice()
     with patch(
-        "jarvis_cli.tts.providers.piper.PiperVoice"
+        "jarvis.tts.providers.piper.PiperVoice"
     ) as PV:
         PV.load = MagicMock(return_value=voice)
         await p.synthesize("one", lang="en", out_path=tmp_path / "a.wav")
@@ -88,7 +88,7 @@ async def test_piper_prewarm_loads_and_caches_en_voice(tmp_path: Path):
     (tmp_path / "en_GB-alan-medium.onnx").write_bytes(b"\x00")  # presence check
     voice = _fake_voice()
     with patch(
-        "jarvis_cli.tts.providers.piper.PiperVoice"
+        "jarvis.tts.providers.piper.PiperVoice"
     ) as PV:
         PV.load = MagicMock(return_value=voice)
         await p.prewarm()

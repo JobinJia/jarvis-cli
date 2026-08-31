@@ -15,10 +15,10 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.tts.protocol import read_frame, write_frame
-from jarvis_cli.tts.worker import _Worker
-from jarvis_cli.tts.worker_client import WorkerProvider
+from jarvis.config import Config
+from jarvis.tts.protocol import read_frame, write_frame
+from jarvis.tts.worker import _Worker
+from jarvis.tts.worker_client import WorkerProvider
 
 
 class _FakeWriter:
@@ -259,7 +259,7 @@ def test_recycle_threshold():
 def test_client_mirrors_the_provider_streaming_contract():
     """The daemon picks its audio sink from these before any child exists, so
     they must come from the provider class, not from a live worker."""
-    from jarvis_cli.tts.providers.xtts import XTTSProvider
+    from jarvis.tts.providers.xtts import XTTSProvider
 
     wp = WorkerProvider("xtts", "/tmp/cfg.toml", max_syntheses=100)
     assert wp.supports_streaming is XTTSProvider.supports_streaming
@@ -328,7 +328,7 @@ async def test_real_child_reports_provider_errors_without_dying(tmp_path: Path):
 
 
 def test_heavy_providers_are_wrapped_light_ones_are_not():
-    from jarvis_cli.daemon.main import _make_tts_provider
+    from jarvis.daemon.main import _make_tts_provider
 
     cfg = Config()
     cfg.tts.worker_process = True
@@ -339,8 +339,8 @@ def test_heavy_providers_are_wrapped_light_ones_are_not():
 
 
 def test_worker_process_can_be_turned_off():
-    from jarvis_cli.daemon.main import _make_tts_provider
-    from jarvis_cli.tts.providers.xtts import XTTSProvider
+    from jarvis.daemon.main import _make_tts_provider
+    from jarvis.tts.providers.xtts import XTTSProvider
 
     cfg = Config()
     cfg.tts.worker_process = False
@@ -349,7 +349,7 @@ def test_worker_process_can_be_turned_off():
 
 @pytest.mark.asyncio
 async def test_engine_recycles_only_worn_workers():
-    from jarvis_cli.tts.engine import TTSEngine
+    from jarvis.tts.engine import TTSEngine
 
     class _Stub(WorkerProvider):
         def __init__(self, worn: bool) -> None:
@@ -374,7 +374,7 @@ async def test_engine_recycles_only_worn_workers():
 
 @pytest.mark.asyncio
 async def test_engine_recycle_failure_does_not_break_the_speech_loop():
-    from jarvis_cli.tts.engine import TTSEngine
+    from jarvis.tts.engine import TTSEngine
 
     class _Stuck(WorkerProvider):
         def __init__(self) -> None:

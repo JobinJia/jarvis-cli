@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.tts.engine import TTSEngine
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.tts.engine import TTSEngine
 
 
 class _FakeProvider:

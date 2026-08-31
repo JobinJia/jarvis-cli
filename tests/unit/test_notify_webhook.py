@@ -4,9 +4,9 @@ import httpx
 import pytest
 import respx
 
-from jarvis_cli.config import WebhookConfig
-from jarvis_cli.notify import webhook
-from jarvis_cli.types import Event
+from jarvis.config import WebhookConfig
+from jarvis.notify import webhook
+from jarvis.types import Event
 
 
 def _event(**kw) -> Event:

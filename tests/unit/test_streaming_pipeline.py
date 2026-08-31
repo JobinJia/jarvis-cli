@@ -17,9 +17,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis_cli.config import Config
-from jarvis_cli.daemon.main import Daemon
-from jarvis_cli.types import Event
+from jarvis.config import Config
+from jarvis.daemon.main import Daemon
+from jarvis.types import Event
 
 
 def _llm_event(sid: str = "s1", ntype: str = "permission_prompt") -> Event:
@@ -114,7 +114,7 @@ async def test_process_one_streaming_feeds_sentences_into_one_session():
     d.tts.primary = primary
 
     fake_sp, sessions = _fake_stream_player()
-    with patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+    with patch("jarvis.daemon.main.StreamPlayer", fake_sp):
         await d._process_one_streaming(_llm_event())
 
     assert [text for text, _ in primary.calls] == [
@@ -201,7 +201,7 @@ async def test_streaming_cancel_mid_stream_stops_playback():
     d.tts.primary = primary
 
     fake_sp, sessions = _fake_stream_player()
-    with patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+    with patch("jarvis.daemon.main.StreamPlayer", fake_sp):
         await d._process_one_streaming(_llm_event("s1"))
 
     assert [text for text, _ in primary.calls] == ["First sentence here."]
@@ -228,7 +228,7 @@ async def test_streaming_threads_emotion_into_phrase_and_tts():
     d.tts.primary = primary
 
     fake_sp, _sessions = _fake_stream_player()
-    with patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+    with patch("jarvis.daemon.main.StreamPlayer", fake_sp):
         await d._process_one_streaming(_llm_event(ntype="tool_failure"))
 
     assert seen_phrase_emotions == ["grave"]
@@ -264,8 +264,8 @@ async def test_streaming_feed_failure_falls_back_to_file_synth():
     fake_sp, sessions = _fake_stream_player(
         first_feed_error=RuntimeError("pipe went sideways"),
     )
-    with patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp), \
-            patch("jarvis_cli.daemon.main.play", side_effect=_fake_play):
+    with patch("jarvis.daemon.main.StreamPlayer", fake_sp), \
+            patch("jarvis.daemon.main.play", side_effect=_fake_play):
         await d._process_one_streaming(_llm_event())
 
     # Sentence 1: fed to session 1, which blew up → aborted, then file synth.
@@ -312,11 +312,11 @@ async def test_process_one_streaming_pcm_provider_routes_through_pcm_sink():
     sink = _FakeSession()
     seen: dict = {}
     with patch(
-        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=False,
+        "jarvis.daemon.main.pcm_sink_unusable", return_value=False,
     ), patch(
-        "jarvis_cli.daemon.main.open_pcm_sink",
+        "jarvis.daemon.main.open_pcm_sink",
         side_effect=_fake_open_pcm_sink(sink, seen),
-    ), patch("jarvis_cli.daemon.main.StreamPlayer") as stream_player:
+    ), patch("jarvis.daemon.main.StreamPlayer") as stream_player:
         await d._process_one_streaming(_llm_event())
 
     stream_player.spawn.assert_not_called()
@@ -353,12 +353,12 @@ async def test_raw_pcm_never_streams_into_ffplay():
 
         fake_sp, sessions = _fake_stream_player()
         with patch(
-            "jarvis_cli.daemon.main.pcm_sink_unusable",
+            "jarvis.daemon.main.pcm_sink_unusable",
             return_value=label == "wedged",
-        ), patch("jarvis_cli.daemon.main.open_pcm_sink") as pcm_sink, \
-                patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp), \
+        ), patch("jarvis.daemon.main.open_pcm_sink") as pcm_sink, \
+                patch("jarvis.daemon.main.StreamPlayer", fake_sp), \
                 patch.object(d.tts, "synthesize") as synth, \
-                patch("jarvis_cli.daemon.main.play") as afplay:
+                patch("jarvis.daemon.main.play") as afplay:
             await d._process_one_streaming(_llm_event())
 
         assert sessions == [], f"{label}: streamed into ffplay"
@@ -379,9 +379,9 @@ async def test_try_stream_declines_when_pcm_sink_unusable():
     d.tts.primary = primary
 
     with patch(
-        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=True,
-    ), patch("jarvis_cli.daemon.main.open_pcm_sink") as pcm_sink, \
-            patch("jarvis_cli.daemon.main.play_stream") as play_stream:
+        "jarvis.daemon.main.pcm_sink_unusable", return_value=True,
+    ), patch("jarvis.daemon.main.open_pcm_sink") as pcm_sink, \
+            patch("jarvis.daemon.main.play_stream") as play_stream:
         ok = await d._try_stream("Hello sir.", "en", None)
 
     assert ok is False
@@ -406,8 +406,8 @@ async def test_container_provider_still_streams_when_pcm_wedged():
 
     fake_sp, sessions = _fake_stream_player()
     with patch(
-        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=True,
-    ), patch("jarvis_cli.daemon.main.StreamPlayer", fake_sp):
+        "jarvis.daemon.main.pcm_sink_unusable", return_value=True,
+    ), patch("jarvis.daemon.main.StreamPlayer", fake_sp):
         await d._process_one_streaming(_llm_event())
 
     assert len(sessions) == 1
@@ -429,11 +429,11 @@ async def test_try_stream_pcm_provider_routes_through_pcm_sink():
     sink = _FakeSession()
     seen: dict = {}
     with patch(
-        "jarvis_cli.daemon.main.pcm_sink_unusable", return_value=False,
+        "jarvis.daemon.main.pcm_sink_unusable", return_value=False,
     ), patch(
-        "jarvis_cli.daemon.main.open_pcm_sink",
+        "jarvis.daemon.main.open_pcm_sink",
         side_effect=_fake_open_pcm_sink(sink, seen),
-    ), patch("jarvis_cli.daemon.main.play_stream") as play_stream:
+    ), patch("jarvis.daemon.main.play_stream") as play_stream:
         ok = await d._try_stream("Hello sir.", "en", None)
 
     assert ok is True
@@ -484,9 +484,9 @@ async def test_sink_is_concluded_before_falling_back_mid_utterance():
         order.append("afplay")
 
     with patch.object(d, "_streams_into_ffplay", side_effect=lambda _p: next(decisions)), \
-            patch("jarvis_cli.daemon.main.open_pcm_sink", side_effect=_open), \
+            patch("jarvis.daemon.main.open_pcm_sink", side_effect=_open), \
             patch.object(d.tts, "synthesize"), \
-            patch("jarvis_cli.daemon.main.play", side_effect=_afplay):
+            patch("jarvis.daemon.main.play", side_effect=_afplay):
         await d._process_one_streaming(_llm_event())
 
     assert order == ["sink-opened", "sink-closed", "afplay"], order

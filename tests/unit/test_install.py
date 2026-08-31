@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis_cli.install import (
+from jarvis.install import (
     PLIST_LABEL,
     EnvScan,
     WizardChoices,
@@ -19,8 +19,8 @@ from jarvis_cli.install import (
 
 
 def test_merge_settings_into_empty():
-    out = merge_claude_settings({}, hook_command="jarvis-cli-hook")
-    assert out["hooks"]["Notification"][0]["hooks"][0]["command"] == "jarvis-cli-hook"
+    out = merge_claude_settings({}, hook_command="jarvis-hook")
+    assert out["hooks"]["Notification"][0]["hooks"][0]["command"] == "jarvis-hook"
 
 
 def test_merge_settings_preserves_other_hooks():
@@ -29,49 +29,49 @@ def test_merge_settings_preserves_other_hooks():
             "PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "x"}]}]
         }
     }
-    out = merge_claude_settings(existing, hook_command="jarvis-cli-hook")
+    out = merge_claude_settings(existing, hook_command="jarvis-hook")
     assert "PreToolUse" in out["hooks"]
     assert "Notification" in out["hooks"]
 
 
 def test_merge_settings_is_idempotent():
-    out1 = merge_claude_settings({}, hook_command="jarvis-cli-hook")
-    out2 = merge_claude_settings(out1, hook_command="jarvis-cli-hook")
+    out1 = merge_claude_settings({}, hook_command="jarvis-hook")
+    out2 = merge_claude_settings(out1, hook_command="jarvis-hook")
     notif = out2["hooks"]["Notification"]
     # Should not duplicate our entry
-    assert sum(1 for n in notif for h in n["hooks"] if h["command"] == "jarvis-cli-hook") == 1
+    assert sum(1 for n in notif for h in n["hooks"] if h["command"] == "jarvis-hook") == 1
 
 
 def test_render_plist_contains_label_and_program(tmp_path: Path):
     plist = render_plist(
         label=PLIST_LABEL,
-        program="/usr/local/bin/jarvis-cli-daemon",
+        program="/usr/local/bin/jarvis-daemon",
         log_dir=str(tmp_path),
         env={"PATH": "/opt/homebrew/bin"},
     )
-    assert "<string>com.jobin.jarvis-cli</string>" in plist
-    assert "<string>/usr/local/bin/jarvis-cli-daemon</string>" in plist
+    assert "<string>com.jobin.jarvis</string>" in plist
+    assert "<string>/usr/local/bin/jarvis-daemon</string>" in plist
     assert "<key>KeepAlive</key>" in plist
     assert str(tmp_path) in plist
     assert "<key>PATH</key>" in plist
 
 
 def test_merge_settings_registers_userpromptsubmit_and_posttooluse():
-    out = merge_claude_settings({}, hook_command="jarvis-cli-hook")
+    out = merge_claude_settings({}, hook_command="jarvis-hook")
     for hook_type in ("UserPromptSubmit", "PostToolUse"):
         entries = out["hooks"][hook_type]
         assert len(entries) == 1
-        assert entries[0]["hooks"][0]["command"] == "jarvis-cli-hook"
+        assert entries[0]["hooks"][0]["command"] == "jarvis-hook"
 
 
 def test_merge_settings_idempotent_for_new_hooks():
-    out1 = merge_claude_settings({}, hook_command="jarvis-cli-hook")
-    out2 = merge_claude_settings(out1, hook_command="jarvis-cli-hook")
+    out1 = merge_claude_settings({}, hook_command="jarvis-hook")
+    out2 = merge_claude_settings(out1, hook_command="jarvis-hook")
     for hook_type in ("UserPromptSubmit", "PostToolUse"):
         entries = out2["hooks"][hook_type]
         count = sum(
             1 for matcher in entries for h in matcher["hooks"]
-            if h["command"] == "jarvis-cli-hook"
+            if h["command"] == "jarvis-hook"
         )
         assert count == 1
 
@@ -84,23 +84,23 @@ def test_merge_settings_preserves_existing_userpromptsubmit_entries():
             ]
         }
     }
-    out = merge_claude_settings(existing, hook_command="jarvis-cli-hook")
+    out = merge_claude_settings(existing, hook_command="jarvis-hook")
     cmds = [
         h["command"]
         for m in out["hooks"]["UserPromptSubmit"]
         for h in m["hooks"]
     ]
     assert "other-hook" in cmds
-    assert "jarvis-cli-hook" in cmds
+    assert "jarvis-hook" in cmds
 
 
 def test_remove_strips_our_userpromptsubmit_and_posttooluse_entries():
-    existing = merge_claude_settings({}, hook_command="jarvis-cli-hook")
-    out = remove_from_claude_settings(existing, hook_command="jarvis-cli-hook")
+    existing = merge_claude_settings({}, hook_command="jarvis-hook")
+    out = remove_from_claude_settings(existing, hook_command="jarvis-hook")
     for hook_type in ("UserPromptSubmit", "PostToolUse", "Notification"):
         entries = out.get("hooks", {}).get(hook_type, [])
         cmds = [h["command"] for m in entries for h in m["hooks"]]
-        assert "jarvis-cli-hook" not in cmds
+        assert "jarvis-hook" not in cmds
 
 
 def test_render_plist_embeds_env_vars():
@@ -118,14 +118,14 @@ def test_render_plist_embeds_env_vars():
 # Codex config.toml merge
 # ---------------------------------------------------------------------------
 
-from jarvis_cli.install import merge_codex_config, remove_from_codex_config
+from jarvis.install import merge_codex_config, remove_from_codex_config
 
 
 def test_merge_codex_config_into_empty_file():
-    out = merge_codex_config("", hook_command="/abs/jarvis-cli-hook")
-    assert "# === jarvis-cli:start ===" in out
-    assert "# === jarvis-cli:end ===" in out
-    assert 'notify = ["/abs/jarvis-cli-hook"]' in out
+    out = merge_codex_config("", hook_command="/abs/jarvis-hook")
+    assert "# === jarvis:start ===" in out
+    assert "# === jarvis:end ===" in out
+    assert 'notify = ["/abs/jarvis-hook"]' in out
     assert "[[hooks.PreToolUse]]" in out
     assert "[[hooks.PermissionRequest]]" in out
     assert "[[hooks.UserPromptSubmit]]" in out
@@ -145,10 +145,10 @@ def test_merge_codex_config_inserts_before_first_section_to_keep_toml_valid():
         '[projects."/x"]\n'
         'trust_level = "trusted"\n'
     )
-    out = merge_codex_config(existing, hook_command="/abs/jarvis-cli-hook")
+    out = merge_codex_config(existing, hook_command="/abs/jarvis-hook")
 
     assert out.index('model = "gpt-5.5"') < out.index("notify = ")
-    assert out.index("# === jarvis-cli:start ===") < out.index('[projects."/x"]')
+    assert out.index("# === jarvis:start ===") < out.index('[projects."/x"]')
     assert '[projects."/x"]' in out
     assert 'trust_level = "trusted"' in out
 
@@ -159,14 +159,14 @@ def test_merge_codex_config_is_idempotent_replaces_existing_block():
     it or accumulate stale entries."""
     first = merge_codex_config(
         'model = "x"\n[projects."/x"]\n',
-        hook_command="/old/jarvis-cli-hook",
+        hook_command="/old/jarvis-hook",
     )
-    second = merge_codex_config(first, hook_command="/new/jarvis-cli-hook")
+    second = merge_codex_config(first, hook_command="/new/jarvis-hook")
 
-    assert second.count("# === jarvis-cli:start ===") == 1
-    assert second.count("# === jarvis-cli:end ===") == 1
-    assert "/old/jarvis-cli-hook" not in second
-    assert "/new/jarvis-cli-hook" in second
+    assert second.count("# === jarvis:start ===") == 1
+    assert second.count("# === jarvis:end ===") == 1
+    assert "/old/jarvis-hook" not in second
+    assert "/new/jarvis-hook" in second
 
 
 def test_remove_from_codex_config_strips_managed_block_only():
@@ -176,10 +176,10 @@ def test_remove_from_codex_config_strips_managed_block_only():
         '[projects."/x"]\n'
         'trust_level = "trusted"\n'
     )
-    patched = merge_codex_config(existing, hook_command="/abs/jarvis-cli-hook")
+    patched = merge_codex_config(existing, hook_command="/abs/jarvis-hook")
     cleaned = remove_from_codex_config(patched)
 
-    assert "# === jarvis-cli:start ===" not in cleaned
+    assert "# === jarvis:start ===" not in cleaned
     assert "notify = " not in cleaned
     assert "[[hooks." not in cleaned
     assert 'model = "gpt-5.5"' in cleaned
@@ -193,10 +193,10 @@ def test_remove_from_codex_config_is_safe_when_block_absent():
 
 def test_merge_codex_config_no_sections_only_top_level_keys():
     existing = 'model = "gpt-5.5"\n'
-    out = merge_codex_config(existing, hook_command="/abs/jarvis-cli-hook")
+    out = merge_codex_config(existing, hook_command="/abs/jarvis-hook")
     assert 'model = "gpt-5.5"' in out
-    assert "# === jarvis-cli:start ===" in out
-    assert out.index('model = "gpt-5.5"') < out.index("# === jarvis-cli:start ===")
+    assert "# === jarvis:start ===" in out
+    assert out.index('model = "gpt-5.5"') < out.index("# === jarvis:start ===")
 
 
 def test_merge_codex_config_output_is_parseable_toml():
@@ -209,12 +209,12 @@ def test_merge_codex_config_output_is_parseable_toml():
         '[projects."/x"]\n'
         'trust_level = "trusted"\n'
     )
-    out = merge_codex_config(existing, hook_command="/abs/jarvis-cli-hook")
+    out = merge_codex_config(existing, hook_command="/abs/jarvis-hook")
     parsed = tomllib.loads(out)
     assert parsed["model"] == "gpt-5.5"
-    assert parsed["notify"] == ["/abs/jarvis-cli-hook"]
+    assert parsed["notify"] == ["/abs/jarvis-hook"]
     assert len(parsed["hooks"]["PreToolUse"]) == 1
-    assert parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "/abs/jarvis-cli-hook"
+    assert parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "/abs/jarvis-hook"
     assert parsed["projects"]["/x"]["trust_level"] == "trusted"
 
 
@@ -305,7 +305,7 @@ def test_scan_environment_detects_live_ollama(
 def test_render_configured_toml_round_trips_through_load_config(tmp_path: Path):
     """The wizard's output must parse cleanly via load_config — anything
     else means a fresh-install user gets a broken daemon."""
-    from jarvis_cli.config import load_config
+    from jarvis.config import load_config
 
     choices = WizardChoices(
         humor_level=2, voice_language="en", city="Shanghai",
@@ -333,7 +333,7 @@ def test_render_configured_toml_round_trips_through_load_config(tmp_path: Path):
 def test_render_configured_toml_clamps_implicit_humor_within_range(tmp_path: Path):
     """Wizard returns 0-3, but if a config field drift happened we'd want
     the loader's clamp to still bring us back into range. Belt + braces."""
-    from jarvis_cli.config import load_config
+    from jarvis.config import load_config
 
     choices = WizardChoices(
         humor_level=3, voice_language="auto", city="",

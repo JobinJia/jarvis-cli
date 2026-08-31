@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from jarvis_cli.skills.catalog import (
+from jarvis.skills.catalog import (
     deslug,
     lexical_tokens,
     parse_skill_file,
