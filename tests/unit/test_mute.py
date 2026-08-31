@@ -21,13 +21,25 @@ from jarvis import mute
         ("2H", 7200),
         (" 45m ", 2700),
         ("30", 1800),  # bare number = minutes
+        # spelled-out units — `min` must beat `m` in the alternation, or the
+        # trailing "in" falls outside the match and the whole parse fails
+        ("30min", 1800),
+        ("30mins", 1800),
+        ("30minutes", 1800),
+        ("45sec", 45),
+        ("2hr", 7200),
+        ("2hours", 7200),
+        ("1day", 86400),
+        ("2 DAYS", 172800),
     ],
 )
 def test_parse_duration(text, seconds):
     assert mute.parse_duration(text) == seconds
 
 
-@pytest.mark.parametrize("text", ["", "soon", "30x", "-5m", "0h", "m30"])
+@pytest.mark.parametrize(
+    "text", ["", "soon", "30x", "-5m", "0h", "m30", "30minute s", "30mi"]
+)
 def test_parse_duration_rejects_junk(text):
     with pytest.raises(ValueError):
         mute.parse_duration(text)

@@ -33,8 +33,21 @@ FOREVER = "forever"
 # enough that forgetting to unmute costs one afternoon, not one week.
 DEFAULT_MUTE_SECONDS = 30 * 60
 
-_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhd])?$", re.IGNORECASE)
+# Spelled-out units alongside the single letters: `30min` and `2hours` are
+# what people actually type, and rejecting them costs a round trip to the
+# error message for no reason. Ordered longest-first WITHIN each family so
+# the regex alternation below prefers `min` over `m` — dict order is the
+# alternation order, so a shorter spelling listed first would shadow the
+# longer ones and leave a trailing `in` unmatched.
+_UNITS = {
+    "seconds": 1, "second": 1, "secs": 1, "sec": 1, "s": 1,
+    "minutes": 60, "minute": 60, "mins": 60, "min": 60, "m": 60,
+    "hours": 3600, "hour": 3600, "hrs": 3600, "hr": 3600, "h": 3600,
+    "days": 86400, "day": 86400, "d": 86400,
+}
+_DURATION_RE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*(" + "|".join(_UNITS) + r")?$", re.IGNORECASE
+)
 
 Expiry = float | str  # epoch seconds, or FOREVER
 
@@ -42,13 +55,16 @@ Expiry = float | str  # epoch seconds, or FOREVER
 def parse_duration(text: str) -> float:
     """Seconds for `60s` / `30m` / `1h` / `7d`; a bare number means minutes.
 
+    Units may also be spelled out (`30min`, `2hours`, `1day`).
+
     Raises ValueError with a user-facing message on anything else — the CLI
     prints it verbatim.
     """
     m = _DURATION_RE.match(text.strip())
     if not m:
         raise ValueError(
-            f"cannot read {text!r} as a duration — use 60s, 30m, 1h or 7d"
+            f"cannot read {text!r} as a duration — use 60s, 30m, 1h or 7d "
+            f"(spelled-out units work too: 30min, 2hours)"
         )
     seconds = float(m.group(1)) * _UNITS[(m.group(2) or "m").lower()]
     if seconds <= 0:
