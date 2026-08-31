@@ -55,15 +55,35 @@ async def test_cjk_clause_delimiters_do_not_split(delim: str):
 
 
 @pytest.mark.asyncio
-async def test_em_dash_does_not_end_a_sentence():
-    """The house style is "clause — clause?" in nearly every line; splitting
-    at the dash hands XTTS a dangling half-sentence that it draws out
-    painfully ("Sir …" stretched for seconds). The dash-joined line must
-    reach TTS as ONE unit, yielding only at the real terminator."""
+async def test_em_dash_is_rewritten_into_two_sentences():
+    """The house style joins clauses with a dash, and a joined line costs the
+    whole utterance's synthesis before the first sound. The dash becomes a
+    full stop so TTS can start on the first clause — note the clause is
+    CLOSED, not left dangling (that is what XTTS draws out painfully)."""
     chunks = await _collect([
         "Sir, he wishes to push to main ", "—", " shall I allow", "?",
     ])
-    assert chunks == ["Sir, he wishes to push to main — shall I allow?"]
+    assert chunks == ["Sir, he wishes to push to main.", "shall I allow?"]
+
+
+@pytest.mark.asyncio
+async def test_no_chunk_is_ever_left_dangling_on_a_dash():
+    """The failure mode the rewrite must never reintroduce: a chunk handed to
+    TTS still ending on the dash, which it renders with a long drawn-out
+    delivery ("Sir …" stretched for seconds)."""
+    chunks = await _collect([
+        "Sir, the orchestra waits ", "—", " only your cue remains", ".",
+    ])
+    assert all(not c.rstrip().endswith(("—", "--")) for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_dash_before_min_chars_stays_joined():
+    """Too short to stand alone: closing it would hand TTS a two-word piece,
+    whose per-piece prefill dominates (RTF 3.10 measured on a 20-char clause).
+    Below the floor the dash stays where it is."""
+    chunks = await _collect(["Ready ", "—", " your move", "?"])
+    assert chunks == ["Ready — your move?"]
 
 
 @pytest.mark.asyncio

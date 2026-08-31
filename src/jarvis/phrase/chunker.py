@@ -12,6 +12,15 @@ delivery ("Sir, the orchestra waits —" → 3.3s of audio for five words), and
 tiny pieces decode disproportionately slowly (measured RTF 3.10 on a 20-char
 clause — per-piece prefill dominates), so the "earlier" start actually
 arrived later and sounded worse.  Whole sentences only.
+
+The em-dash rewrite below is NOT that revision.  What XTTS drawls is a
+DANGLING clause — one still ending on the dash, with no terminal
+punctuation to close the prosody.  Rewriting "A — B" into the two whole
+sentences "A." and "B" hands it two closed units instead, and closed
+units measure fine ("All done, sir." — 14 chars, 0.6s wall, against 4.3s
+for the joined line).  prompt._SYSTEM_BASE already asks for two sentences;
+this is the deterministic floor for when the model answers with the joined
+form regardless, which it still did 3 times in 8 on 2026-08-31.
 """
 from __future__ import annotations
 
@@ -23,17 +32,31 @@ from collections.abc import AsyncIterator
 # closing quotes/brackets/whitespace, so "he said." and "done!" both
 # trigger a split.
 #
-# The em-dash is deliberately NOT here: the Jarvis phrasing style leans on
-# "clause — clause?" in nearly every line, and splitting at the dash hands
-# XTTS a dangling half-sentence ("Sir, he wishes to push to main —") that it
-# renders with a long, drawn-out delivery — the user heard "Sir" stretched
-# for seconds.  Dash-joined clauses must stay one synthesis unit.
+# The em-dash is deliberately NOT here: it never ENDS a sentence.  It is
+# handled by _DASH_JOIN below, which rewrites rather than merely splits — a
+# bare split would hand XTTS the dangling "Sir, he wishes to push to main —"
+# that it renders with a long, drawn-out delivery (the user heard "Sir"
+# stretched for seconds).
 _SENTENCE_END = re.compile(r'[.!?;。！？；]["\')）\]】]?\s*$')
+
+# "clause — clause" joined by a dash, in either the spaced Latin form or the
+# unspaced CJK double dash.  Each joined line costs a whole utterance's
+# synthesis before the first sound, so when the model ignores the prompt's
+# two-sentence instruction, close the first clause here instead.
+_DASH_JOIN = re.compile(r'\s*(?:——|—|--)\s*')
 
 # Fragments shorter than this are held back — catches abbreviations like
 # "Mr." and numbered lists ("1.") that end in a period but aren't sentence
 # boundaries.
-MIN_CHUNK_CHARS = 20
+#
+# Lowered 20 -> 12 on 2026-08-31, when the phrase prompt started asking for a
+# short opening sentence followed by the detail (see prompt._SYSTEM_BASE). The
+# whole point of that opening is to be tiny — "All done, sir." is 14 chars and
+# synthesises in 0.6s against 4.3s for a full dash-joined line — and at 20 the
+# floor swallowed it, holding the opening back until the second sentence
+# arrived and defeating the split. 12 still holds "Mr." (3) and "1." (2); the
+# cost of a rare late split is one delayed sentence, not a wrong one.
+MIN_CHUNK_CHARS = 12
 
 
 async def chunk_sentences(
@@ -62,6 +85,19 @@ async def chunk_sentences(
             if sentence:
                 yield sentence
             buf = ""
+            continue
+        # No terminal punctuation yet.  If the model joined two clauses with a
+        # dash, close the first one here so TTS can start on it.  Requires text
+        # already past the dash: a buffer still ending ON the dash would yield
+        # exactly the dangling fragment the docstring warns about.
+        m = _DASH_JOIN.search(buf)
+        if m and buf[m.end():].strip():
+            head = buf[:m.start()].strip()
+            if len(head) >= min_chars:
+                if not _SENTENCE_END.search(head):
+                    head += "."
+                yield head
+                buf = buf[m.end():]
     # Flush any remaining text when the stream ends.
     tail = buf.strip()
     if tail:
